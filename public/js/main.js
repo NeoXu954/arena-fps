@@ -142,6 +142,29 @@ $('btn-join').addEventListener('click', async () => {
 $('btn-help').addEventListener('click', () => $('help-modal').classList.add('show'));
 $('btn-help-close').addEventListener('click', () => $('help-modal').classList.remove('show'));
 
+// ---------------- 单人训练 ----------------
+let soloDifficulty = 'normal';
+document.querySelectorAll('.diff-btn').forEach((b) => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('.diff-btn').forEach((x) => x.classList.remove('active'));
+    b.classList.add('active');
+    soloDifficulty = b.dataset.diff;
+  });
+});
+
+$('btn-solo').addEventListener('click', async () => {
+  audio.unlock();
+  myName = $('name-input').value.trim();
+  showLoading(true);
+  const res = await net.startSolo(myName, soloDifficulty);
+  showLoading(false);
+  if (!res || !res.ok) {
+    ui.toast('开始失败，请重试');
+    return;
+  }
+  // 服务端会立即推 countdown 的 roomState，enterMatch 由网络事件驱动
+});
+
 $('btn-copy').addEventListener('click', async () => {
   const code = $('room-code').textContent;
   try {
@@ -159,8 +182,12 @@ $('btn-leave-lobby').addEventListener('click', () => {
 
 $('btn-rematch').addEventListener('click', () => {
   net.rematch();
-  $('lobby-status').textContent = '等待对手准备…';
-  ui.toast('已请求再来一局');
+  if (net.solo) {
+    ui.toast('再来一局！');
+  } else {
+    $('lobby-status').textContent = '等待对手准备…';
+    ui.toast('已请求再来一局');
+  }
 });
 
 $('btn-lobby').addEventListener('click', () => {

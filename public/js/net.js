@@ -56,9 +56,21 @@ export class Net {
     });
   }
 
+  startSolo(name, difficulty) {
+    return new Promise((resolve) => {
+      this.socket.emit('startSolo', { name, difficulty }, (res) => {
+        if (res && res.ok) {
+          this.roomId = res.roomId; this.token = res.token; this.slot = res.slot;
+          this.solo = true;
+        }
+        resolve(res);
+      });
+    });
+  }
+
   leaveRoom() {
     this.socket.emit('leaveRoom');
-    this.roomId = null; this.token = null; this.slot = null;
+    this.roomId = null; this.token = null; this.slot = null; this.solo = false;
   }
 
   sendMove(state) { this.socket.emit('move', state); }

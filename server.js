@@ -88,7 +88,36 @@ function makePlayer(slot) {
   };
 }
 
-function createRoom() {
+// 三档 AI 难度参数
+// reactMs: 发现目标后开火前的反应延迟；aimErr: 瞄准角度误差(弧度)；
+// fireGap: 连续开火最小间隔(ms)；engage: 期望交战距离；aggro: 移动积极性(0~1)
+const BOT_DIFFICULTY = {
+  easy:   { reactMs: 520, aimErr: 0.11,  fireGap: 620, engage: 12, aggro: 0.45, loseSightMs: 900 },
+  normal: { reactMs: 300, aimErr: 0.055, fireGap: 380, engage: 10, aggro: 0.7,  loseSightMs: 1200 },
+  hard:   { reactMs: 140, aimErr: 0.022, fireGap: 240, engage: 8,  aggro: 0.92, loseSightMs: 1800 },
+};
+
+function makeBot(slot, difficulty) {
+  const p = makePlayer(slot);
+  p.name = ['菜鸟机器人', '标准机器人', '精英机器人'][['easy', 'normal', 'hard'].indexOf(difficulty)] || '机器人';
+  p.isBot = true;
+  p.connected = true; // 让房间视其为在场玩家，参与开赛/计分
+  p.socketId = null;
+  // AI 运行时状态
+  p.ai = {
+    cfg: BOT_DIFFICULTY[difficulty] || BOT_DIFFICULTY.normal,
+    difficulty: difficulty || 'normal',
+    seenAt: 0,        // 最近一次看见目标的时间
+    lastSeenPos: null, // 最近看见目标的位置（丢失视野后前往）
+    nextFireAt: 0,     // 下次可开火时间
+    strafeDir: 1,      // 侧移方向
+    strafeUntil: 0,    // 侧移切换时间
+    wanderTarget: null, // 无目标时的游走点
+  };
+  return p;
+}
+
+function createRoom(opts) {
   const id = genRoomId();
   const room = {
     id,
@@ -100,6 +129,7 @@ function createRoom() {
     loop: null,
     createdAt: Date.now(),
     result: null,
+    solo: !!(opts && opts.solo), // 单人模式（含 bot），对手离开即销毁
   };
   rooms.set(id, room);
   return room;
@@ -256,6 +286,7 @@ function endMatch(room) {
 function gameTick(room) {
   const now = Date.now();
   room.tick++;
+  const dt = 1 / TICK_HZ;
 
   // 复活处理
   room.players.forEach((p) => {
@@ -263,6 +294,7 @@ function gameTick(room) {
     if (!p.alive && p.respawnAt && now >= p.respawnAt) {
       spawnPlayer(p);
       p.respawnAt = 0;
+      if (p.isBot && p.ai) { p.ai.seenAt = 0; p.ai.lastSeenPos = null; p.ai.wanderTarget = null; }
       emitRoom(room, 'respawn', { slot: p.slot, pos: p.pos, yaw: p.yaw, invulnUntil: p.invulnUntil });
     }
     // 换弹完成
@@ -298,6 +330,9 @@ function gameTick(room) {
     return;
   }
 
+  // 驱动 AI 敌人（在快照前，保证位置/血量最新）
+  updateBots(room, dt);
+
   // 权威快照
   if (room.tick % SNAPSHOT_EVERY === 0) {
     const players = room.players.filter(Boolean).map((p) => ({
@@ -331,6 +366,208 @@ function applyKill(room, killer, victim) {
 }
 
 // ---------------------------------------------------------------------------
+// AI 敌人（服务端机器人）
+// ---------------------------------------------------------------------------
+// 从 shooter 视线到 target 是否可见（未被掩体遮挡）。返回命中 t（可见）或 Infinity。
+function botLineOfSight(shooter, target) {
+  const origin = { x: shooter.pos.x, y: shooter.pos.y, z: shooter.pos.z };
+  const dir = normalize({
+    x: target.pos.x - origin.x,
+    y: target.pos.y - origin.y,
+    z: target.pos.z - origin.z,
+  });
+  const tPlayer = rayPlayer(origin, dir, target);
+  if (tPlayer === Infinity) return Infinity;
+  for (const b of MAP.colliders) {
+    if (b.type === 'ground') continue;
+    const tb = rayAABB(origin, dir, b);
+    if (tb !== Infinity && tb < tPlayer - 0.05) return Infinity; // 被挡
+  }
+  return tPlayer;
+}
+
+// bot 射击：走与真人相同的权威裁决（命中/扣血/击杀/计分/广播）
+function botShoot(room, bot, target) {
+  const now = Date.now();
+  if (bot.ammo <= 0 || bot.reloading) return;
+  bot.ammo -= 1;
+
+  const origin = { x: bot.pos.x, y: bot.pos.y, z: bot.pos.z };
+  const cfg = bot.ai.cfg;
+  // 朝目标 + 难度相关的瞄准误差
+  const base = normalize({
+    x: target.pos.x - origin.x,
+    y: target.pos.y - origin.y,
+    z: target.pos.z - origin.z,
+  });
+  const dir = normalize({
+    x: base.x + (Math.random() - 0.5) * cfg.aimErr,
+    y: base.y + (Math.random() - 0.5) * cfg.aimErr,
+    z: base.z + (Math.random() - 0.5) * cfg.aimErr,
+  });
+
+  // 让玩家看到 bot 开火（弹道/枪口火光）
+  emitRoom(room, 'oppShot', { slot: bot.slot, origin, dir });
+
+  if (target.alive && now > target.invulnUntil) {
+    const tPlayer = rayPlayer(origin, dir, target);
+    if (tPlayer !== Infinity) {
+      let blocked = false;
+      for (const b of MAP.colliders) {
+        if (b.type === 'ground') continue;
+        const tb = rayAABB(origin, dir, b);
+        if (tb !== Infinity && tb < tPlayer - 0.05) { blocked = true; break; }
+      }
+      if (!blocked) {
+        target.hp = Math.max(0, target.hp - DAMAGE);
+        const point = {
+          x: origin.x + dir.x * tPlayer,
+          y: origin.y + dir.y * tPlayer,
+          z: origin.z + dir.z * tPlayer,
+        };
+        emitRoom(room, 'hit', {
+          attacker: bot.slot, victim: target.slot, hp: target.hp, point, dmg: DAMAGE,
+        });
+        if (target.hp <= 0) applyKill(room, bot, target);
+      }
+    }
+  }
+
+  if (bot.ammo <= 0) {
+    bot.reloading = true;
+    bot.reloadEnd = now + RELOAD_MS;
+  }
+}
+
+function botAimYaw(from, to) {
+  // 朝向约定：forward = (-sin(yaw), 0, -cos(yaw))
+  const dx = to.x - from.x, dz = to.z - from.z;
+  return Math.atan2(-dx, -dz);
+}
+
+// 尝试沿 (dx,dz) 移动 bot，撞掩体则不动（分轴调用实现贴墙滑动）
+function botTryMove(bot, dx, dz) {
+  const r = MAP.PLAYER_RADIUS;
+  const nx = bot.pos.x + dx;
+  const nz = bot.pos.z + dz;
+  const bodyMin = bot.pos.y - MAP.EYE_HEIGHT;
+  const bodyMax = bodyMin + MAP.PLAYER_HEIGHT;
+  for (const b of MAP.colliders) {
+    if (b.type === 'ground' || b.type === 'ramp') continue;
+    const minY = b.cy - b.sy / 2, maxY = b.cy + b.sy / 2;
+    if (maxY <= bodyMin + 0.05 || minY >= bodyMax) continue;
+    const minX = b.cx - b.sx / 2, maxX = b.cx + b.sx / 2;
+    const minZ = b.cz - b.sz / 2, maxZ = b.cz + b.sz / 2;
+    if (nx + r > minX && nx - r < maxX && nz + r > minZ && nz - r < maxZ) return;
+  }
+  bot.pos.x = nx; bot.pos.z = nz;
+}
+
+const BOT_SPEED = 5.4; // 略低于真人 6.2，给玩家一点优势
+
+function updateBots(room, dt) {
+  if (room.phase !== 'playing' && room.phase !== 'overtime') return;
+  const now = Date.now();
+  for (const bot of room.players) {
+    if (!bot || !bot.isBot || !bot.alive) continue;
+    const ai = bot.ai;
+    const cfg = ai.cfg;
+
+    // 换弹完成由 gameTick 统一处理；这里只做行为
+    const target = room.players.find((p) => p && p.slot !== bot.slot && p.connected && !p.isBot);
+    if (!target) continue;
+
+    const los = target.alive ? botLineOfSight(bot, target) : Infinity;
+    const canSee = los !== Infinity;
+    if (canSee) {
+      if (!ai.seenAt) ai.seenAt = now;
+      ai.lastSeenPos = { x: target.pos.x, y: target.pos.y, z: target.pos.z };
+    } else if (ai.seenAt && now - ai.seenAt > cfg.loseSightMs) {
+      ai.seenAt = 0;
+    }
+
+    // 朝向：看得见就瞄准目标，否则朝最近记忆点/游走点
+    let faceTo = null;
+    if (canSee) faceTo = target.pos;
+    else if (ai.lastSeenPos) faceTo = ai.lastSeenPos;
+    if (faceTo) {
+      const desiredYaw = botAimYaw(bot.pos, faceTo);
+      let dy = desiredYaw - bot.yaw;
+      while (dy > Math.PI) dy -= Math.PI * 2;
+      while (dy < -Math.PI) dy += Math.PI * 2;
+      // 困难转向更快
+      const turn = Math.min(1, dt * (cfg.aggro * 6 + 4));
+      bot.yaw += dy * turn;
+    }
+
+    // 移动：看得见目标则维持交战距离 + 侧移；否则前往记忆点
+    let moveTarget = canSee ? target.pos : (ai.seenAt ? ai.lastSeenPos : null);
+    if (!moveTarget) {
+      // 无目标：随机游走
+      if (!ai.wanderTarget || now > (ai.wanderUntil || 0) ||
+          Math.hypot(bot.pos.x - ai.wanderTarget.x, bot.pos.z - ai.wanderTarget.z) < 2) {
+        const lim = MAP.HALF - 4;
+        ai.wanderTarget = { x: (Math.random() * 2 - 1) * lim, z: (Math.random() * 2 - 1) * lim };
+        ai.wanderUntil = now + 3000 + Math.random() * 2000;
+      }
+      moveTarget = ai.wanderTarget;
+    }
+
+    const dxT = moveTarget.x - bot.pos.x;
+    const dzT = moveTarget.z - bot.pos.z;
+    const dist = Math.hypot(dxT, dzT) || 1;
+    let mvx = 0, mvz = 0;
+    if (canSee) {
+      // 维持理想交战距离
+      const diff = dist - cfg.engage;
+      let towards = 0;
+      if (diff > 1.5) towards = 1;        // 太远，靠近
+      else if (diff < -1.5) towards = -1; // 太近，后撤
+      mvx += (dxT / dist) * towards;
+      mvz += (dzT / dist) * towards;
+      // 侧移（绕圈躲子弹）
+      if (now > ai.strafeUntil) { ai.strafeDir = Math.random() < 0.5 ? 1 : -1; ai.strafeUntil = now + 700 + Math.random() * 800; }
+      const perpX = -(dzT / dist) * ai.strafeDir;
+      const perpZ = (dxT / dist) * ai.strafeDir;
+      mvx += perpX * cfg.aggro;
+      mvz += perpZ * cfg.aggro;
+    } else {
+      // 前往目标点
+      mvx += dxT / dist;
+      mvz += dzT / dist;
+    }
+    const mlen = Math.hypot(mvx, mvz);
+    if (mlen > 0.01) {
+      mvx /= mlen; mvz /= mlen;
+      const step = BOT_SPEED * dt * (canSee ? 1 : cfg.aggro * 0.6 + 0.4);
+      botTryMove(bot, mvx * step, 0);
+      botTryMove(bot, 0, mvz * step);
+      bot.moving = true;
+    } else {
+      bot.moving = false;
+    }
+
+    // 边界
+    const lim = MAP.HALF - 1 - MAP.PLAYER_RADIUS;
+    bot.pos.x = Math.max(-lim, Math.min(lim, bot.pos.x));
+    bot.pos.z = Math.max(-lim, Math.min(lim, bot.pos.z));
+
+    // 射击：看得见 + 过了反应延迟 + 过了射击间隔
+    if (canSee && !bot.reloading && bot.ammo > 0 &&
+        ai.seenAt && now - ai.seenAt >= cfg.reactMs && now >= ai.nextFireAt) {
+      botShoot(room, bot, target);
+      ai.nextFireAt = now + cfg.fireGap + Math.random() * cfg.fireGap * 0.4;
+    }
+
+    // 广播 bot 状态（复用 oppState，客户端零改动）
+    emitRoom(room, 'oppState', {
+      slot: bot.slot, pos: { x: bot.pos.x, y: bot.pos.y, z: bot.pos.z },
+      yaw: bot.yaw, pitch: 0, moving: bot.moving,
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Socket 事件
 // ---------------------------------------------------------------------------
 io.on('connection', (socket) => {
@@ -358,6 +595,25 @@ io.on('connection', (socket) => {
     socketIndex.set(socket.id, { roomId: room.id, token: player.token });
     cb && cb({ ok: true, roomId: room.id, slot: 0, token: player.token, color: player.color, map: { spawns: MAP.spawns } });
     broadcastState(room);
+  });
+
+  // 单人训练：玩家占 slot 0，生成 AI bot 占 slot 1，立即开赛
+  socket.on('startSolo', (data, cb) => {
+    const difficulty = (data && ['easy', 'normal', 'hard'].includes(data.difficulty)) ? data.difficulty : 'normal';
+    const room = createRoom({ solo: true });
+    const player = makePlayer(0);
+    player.socketId = socket.id;
+    player.connected = true;
+    if (data && data.name) player.name = String(data.name).slice(0, 12);
+    room.players[0] = player;
+
+    const bot = makeBot(1, difficulty);
+    room.players[1] = bot;
+
+    socket.join(room.id);
+    socketIndex.set(socket.id, { roomId: room.id, token: player.token });
+    cb && cb({ ok: true, roomId: room.id, slot: 0, token: player.token, color: player.color, solo: true, difficulty });
+    startMatch(room);
   });
 
   // 加入房间
@@ -535,6 +791,12 @@ function handleLeave(socket, intentional) {
   const player = room.players.find((p) => p && p.token === idx.token);
   if (!player) return;
   socket.leave(room.id);
+
+  // 单人房间：真人离开/断线即销毁（bot 不需要宽限或通知）
+  if (room.solo) {
+    destroyRoom(room);
+    return;
+  }
 
   if (intentional) {
     // 主动退出：立刻移除，通知对手
