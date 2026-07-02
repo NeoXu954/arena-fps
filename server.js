@@ -27,6 +27,8 @@ const io = new Server(server, {
 
 const PORT = process.env.PORT || 3000;
 app.use(express.static(path.join(__dirname, 'public')));
+// 3D 素材（GLB 模型）
+app.use('/assets', express.static(path.join(__dirname, 'assets')));
 app.get('/health', (req, res) => res.json({ ok: true, rooms: rooms.size }));
 
 // ---------------------------------------------------------------------------

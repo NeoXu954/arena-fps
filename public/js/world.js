@@ -1,17 +1,47 @@
 // world.js —— Three.js 场景、地图、光影、玩家模型、第一人称武器
+// 视觉素材为 low-poly GLB（assets/models/），碰撞盒仍由 map.js 的 AABB 驱动（服务端权威）。
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 const MAP = window.ARENA_MAP;
+const MODEL_URL = '/assets/models/';
+
+// 各建筑 GLB 的基准尺寸（米，X/Y/Z），必须与 gen_models.py 一致。
+// 用于把模型非等比缩放到地图 AABB 的尺寸。所有模型原点在「底面中心」。
+const MODEL_DIMS = {
+  wall:   { x: 1.0, y: 3.0, z: 0.20 },
+  crate:  { x: 0.8, y: 0.8, z: 0.80 },
+  cover:  { x: 1.4, y: 0.9, z: 1.00 },
+  stairs: { x: 1.0, y: 1.0, z: 1.00 },
+};
+
+// 地图 box 类型 → 使用哪个 GLB
+const TYPE_TO_MODEL = {
+  wall: 'wall',
+  container: 'crate',
+  lowwall: 'cover',
+  ramp: 'stairs',
+  crate: 'crate',
+};
 
 export class World {
   constructor(canvas) {
     this.canvas = canvas;
     this.colliders = []; // 客户端碰撞 AABB: {min:Vec3, max:Vec3, top}
     this.remotePlayers = {}; // slot -> mesh group
+    this.models = {};        // 预加载的 GLB 场景缓存
+    this.modelsReady = false;
+
     this._initRenderer();
     this._initScene();
-    this._buildMap();
-    this._initViewModel();
+    this._buildGround();     // 地面 / 网格 / 出生点（同步，无 GLB）
+    this._buildColliders();  // 碰撞盒（同步，始终存在）
+    this._initViewModel();   // 占位 vm 结构（同步，game.js 依赖这些引用）
+
+    // 异步预加载 GLB，成功后替换为 3D 素材，失败则回退到方块
+    this._preload()
+      .then(() => { this.modelsReady = true; this._buildMapVisual(); this._populateViewModel(); })
+      .catch((err) => { console.warn('[world] GLB 加载失败，回退方块素材:', err); this._buildMapVisualFallback(); });
   }
 
   _initRenderer() {
@@ -32,14 +62,11 @@ export class World {
     const scene = new THREE.Scene();
     scene.fog = new THREE.Fog(0x121a2b, 30, 95);
 
-    // 第一人称相机
     const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.05, 400);
     camera.rotation.order = 'YXZ';
     this.scene = scene;
     this.camera = camera;
 
-    // 武器单独放到相机里的子场景层（避免被环境遮挡），用普通子物体即可
-    // 光照：半球环境光 + 主方向光（投影）
     const hemi = new THREE.HemisphereLight(0xbcd6ff, 0x3a4358, 1.15);
     scene.add(hemi);
 
@@ -58,7 +85,6 @@ export class World {
     this._buildSky();
   }
 
-  // 渐变天空盒（轻量 shader 大球）
   _buildSky() {
     const geo = new THREE.SphereGeometry(200, 24, 16);
     const mat = new THREE.ShaderMaterial({
@@ -80,32 +106,47 @@ export class World {
     this.scene.add(new THREE.Mesh(geo, mat));
   }
 
+  // GLB 预加载
+  _preload() {
+    const loader = new GLTFLoader();
+    const names = ['soldier', 'rifle', 'wall', 'cover', 'crate', 'stairs'];
+    const load = (name) => new Promise((resolve, reject) => {
+      loader.load(MODEL_URL + name + '.glb',
+        (gltf) => { this.models[name] = gltf.scene; resolve(); },
+        undefined,
+        (e) => reject(new Error(name + ': ' + e.message)));
+    });
+    return Promise.all(names.map(load));
+  }
+
   _addCollider(b) {
     const top = b.cy + b.sy / 2;
     this.colliders.push({
       min: new THREE.Vector3(b.cx - b.sx / 2, b.cy - b.sy / 2, b.cz - b.sz / 2),
       max: new THREE.Vector3(b.cx + b.sx / 2, b.cy + b.sy / 2, b.cz + b.sz / 2),
       top: top,
-      // 低矮平台/坡道：可直接走上去（不做水平阻挡，仅提供站立支撑）
       step: b.type === 'ramp' || top <= 1.1,
     });
   }
 
-  _buildMap() {
-    // 地面
+  // 碰撞盒（与视觉素材解耦，始终构建）
+  _buildColliders() {
+    MAP.walls.concat(MAP.covers).forEach((b) => this._addCollider(b));
+  }
+
+  // 地面 / 网格 / 中央圆环 / 出生点标记（同步，无 GLB）
+  _buildGround() {
     const groundMat = new THREE.MeshStandardMaterial({ color: 0x3a4560, roughness: 0.95, metalness: 0.05 });
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(MAP.HALF * 2, MAP.HALF * 2), groundMat);
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
     this.scene.add(ground);
 
-    // 地面网格纹理（科幻竞技感）
     const grid = new THREE.GridHelper(MAP.HALF * 2, MAP.HALF, 0x3a5a8a, 0x223049);
     grid.position.y = 0.02;
     grid.material.opacity = 0.35; grid.material.transparent = true;
     this.scene.add(grid);
 
-    // 中央高亮圆环
     const ring = new THREE.Mesh(
       new THREE.RingGeometry(3.2, 3.6, 48),
       new THREE.MeshBasicMaterial({ color: 0x38e8ff, transparent: true, opacity: 0.25, side: THREE.DoubleSide })
@@ -113,36 +154,6 @@ export class World {
     ring.rotation.x = -Math.PI / 2; ring.position.y = 0.03;
     this.scene.add(ring);
 
-    // 材质按类型
-    const matFor = (type) => {
-      switch (type) {
-        case 'wall': return new THREE.MeshStandardMaterial({ color: 0x39455c, roughness: 0.9, metalness: 0.1 });
-        case 'container': return new THREE.MeshStandardMaterial({ color: 0x2f6f8f, roughness: 0.7, metalness: 0.25 });
-        case 'lowwall': return new THREE.MeshStandardMaterial({ color: 0x4a5570, roughness: 0.85 });
-        case 'ramp': return new THREE.MeshStandardMaterial({ color: 0x555f78, roughness: 0.8, metalness: 0.15 });
-        default: return new THREE.MeshStandardMaterial({ color: 0x6b5a3e, roughness: 0.8 });
-      }
-    };
-
-    // 墙 + 掩体
-    MAP.walls.concat(MAP.covers).forEach((b) => {
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(b.sx, b.sy, b.sz), matFor(b.type));
-      mesh.position.set(b.cx, b.cy, b.cz);
-      mesh.castShadow = true; mesh.receiveShadow = true;
-      this.scene.add(mesh);
-      // 集装箱加一点描边色带
-      if (b.type === 'container') {
-        const edge = new THREE.Mesh(
-          new THREE.BoxGeometry(b.sx * 1.001, 0.18, b.sz * 1.001),
-          new THREE.MeshBasicMaterial({ color: 0x38e8ff })
-        );
-        edge.position.set(b.cx, b.cy + b.sy / 2 - 0.2, b.cz);
-        this.scene.add(edge);
-      }
-      this._addCollider(b);
-    });
-
-    // 出生点标记（红蓝）
     MAP.spawns.forEach((sp, i) => {
       const c = i === 0 ? 0x3b82f6 : 0xef4444;
       const m = new THREE.Mesh(
@@ -154,43 +165,56 @@ export class World {
     });
   }
 
-  // 第一人称武器 + 手臂（挂在相机上）
+  // 用 GLB 渲染墙 / 掩体（缩放到各 AABB 尺寸；原点在底面中心）
+  _buildMapVisual() {
+    this._mapGroup = new THREE.Group();
+    this.scene.add(this._mapGroup);
+    MAP.walls.concat(MAP.covers).forEach((b) => {
+      const key = TYPE_TO_MODEL[b.type] || 'crate';
+      const src = this.models[key];
+      if (!src) { this._addBoxMesh(b, this._mapGroup); return; }
+      const dim = MODEL_DIMS[key];
+      const node = src.clone(true);
+      node.scale.set(b.sx / dim.x, b.sy / dim.y, b.sz / dim.z);
+      node.position.set(b.cx, b.cy - b.sy / 2, b.cz);
+      node.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+      this._mapGroup.add(node);
+    });
+  }
+
+  // 回退：GLB 不可用时用原方块素材
+  _buildMapVisualFallback() {
+    this._mapGroup = new THREE.Group();
+    this.scene.add(this._mapGroup);
+    MAP.walls.concat(MAP.covers).forEach((b) => this._addBoxMesh(b, this._mapGroup));
+  }
+
+  _addBoxMesh(b, parent) {
+    const matFor = (type) => {
+      switch (type) {
+        case 'wall': return new THREE.MeshStandardMaterial({ color: 0x39455c, roughness: 0.9, metalness: 0.1 });
+        case 'container': return new THREE.MeshStandardMaterial({ color: 0x2f6f8f, roughness: 0.7, metalness: 0.25 });
+        case 'lowwall': return new THREE.MeshStandardMaterial({ color: 0x4a5570, roughness: 0.85 });
+        case 'ramp': return new THREE.MeshStandardMaterial({ color: 0x555f78, roughness: 0.8, metalness: 0.15 });
+        default: return new THREE.MeshStandardMaterial({ color: 0x6b5a3e, roughness: 0.8 });
+      }
+    };
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(b.sx, b.sy, b.sz), matFor(b.type));
+    mesh.position.set(b.cx, b.cy, b.cz);
+    mesh.castShadow = true; mesh.receiveShadow = true;
+    parent.add(mesh);
+  }
+
+  // 第一人称武器占位结构（同步创建，game.js 依赖 viewModel/muzzle/muzzleFlash/flashLight/vmBase）
   _initViewModel() {
     const vm = new THREE.Group();
     this.camera.add(vm);
     this.scene.add(this.camera);
     vm.position.set(0.22, -0.26, -0.55);
 
-    const metal = new THREE.MeshStandardMaterial({ color: 0x2a2f3a, roughness: 0.5, metalness: 0.7 });
-    const accent = new THREE.MeshStandardMaterial({ color: 0x38e8ff, emissive: 0x0a6273, emissiveIntensity: 0.6, roughness: 0.4 });
-    const skin = new THREE.MeshStandardMaterial({ color: 0x6b7d52, roughness: 0.85 }); // 军绿手套/袖子
-
-    // 枪身
-    const body = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.16, 0.62), metal);
-    body.position.set(0, 0, 0); vm.add(body);
-    // 枪管
-    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.5, 10), metal);
-    barrel.rotation.x = Math.PI / 2; barrel.position.set(0, 0.02, -0.5); vm.add(barrel);
-    // 弹匣
-    const mag = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.2, 0.12), metal);
-    mag.position.set(0, -0.16, 0.05); vm.add(mag);
-    this.magMesh = mag;
-    // 瞄准镜/光条
-    const sight = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.04, 0.3), accent);
-    sight.position.set(0, 0.11, -0.05); vm.add(sight);
-    // 枪托
-    const stock = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.12, 0.18), metal);
-    stock.position.set(0, -0.02, 0.34); vm.add(stock);
-
-    // 手臂（右手握把 + 左手前握）
-    const rArm = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.09, 0.28), skin);
-    rArm.position.set(0.02, -0.14, 0.22); rArm.rotation.x = -0.5; vm.add(rArm);
-    const lArm = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.09, 0.26), skin);
-    lArm.position.set(-0.05, -0.12, -0.28); lArm.rotation.x = 0.7; lArm.rotation.y = 0.2; vm.add(lArm);
-
-    // 枪口（火光与子弹起点）
+    // 枪口锚点（火光 + 子弹起点）
     const muzzle = new THREE.Object3D();
-    muzzle.position.set(0, 0.02, -0.76);
+    muzzle.position.set(0, 0.02, -0.62);
     vm.add(muzzle);
     this.muzzle = muzzle;
 
@@ -202,6 +226,7 @@ export class World {
     flash.position.copy(muzzle.position);
     vm.add(flash);
     this.muzzleFlash = flash;
+
     const flashLight = new THREE.PointLight(0xffb24a, 0, 6);
     flashLight.position.copy(muzzle.position);
     vm.add(flashLight);
@@ -209,37 +234,127 @@ export class World {
 
     this.viewModel = vm;
     this.vmBase = vm.position.clone();
+
+    // 加载前先放一个简易方块枪，避免空手；加载完成后由 _populateViewModel 替换
+    const metal = new THREE.MeshStandardMaterial({ color: 0x2a2f3a, roughness: 0.5, metalness: 0.7 });
+    const tmp = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.16, 0.62), metal);
+    tmp.name = '__tmpgun';
+    vm.add(tmp);
   }
 
-  // 创建远程玩家模型
+  // GLB 加载完成后：用 rifle.glb 替换第一人称武器
+  _populateViewModel() {
+    const vm = this.viewModel;
+    const tmp = vm.getObjectByName('__tmpgun');
+    if (tmp) vm.remove(tmp);
+    if (!this.models.rifle) return;
+
+    const gun = this.models.rifle.clone(true);
+    // 朝向：让枪管指向 -Z（屏幕里），并摆到右手位置
+    gun.scale.setScalar(0.9);
+    gun.rotation.set(0, 0, 0);
+    gun.position.set(0, 0, 0.08);
+    gun.traverse((o) => { if (o.isMesh) { o.castShadow = false; o.frustumCulled = false; } });
+    vm.add(gun);
+    this.gunModel = gun;
+
+    // 第一人称手臂：一对军绿手臂握住步枪，消除枪悬空的空隙
+    const armMat = new THREE.MeshStandardMaterial({ color: 0x3a4a2c, roughness: 0.85 });
+    const gloveMat = new THREE.MeshStandardMaterial({ color: 0x1c2230, roughness: 0.7 });
+    const mkArm = (fx, fy, fz, rot, len) => {
+      const arm = new THREE.Group();
+      const fore = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.05, len, 8), armMat);
+      fore.rotation.x = Math.PI / 2; // 顺 Z 轴伸向枪
+      fore.position.set(0, 0, len / 2 - 0.02);
+      fore.frustumCulled = false;
+      arm.add(fore);
+      const hand = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.06, 0.08), gloveMat);
+      hand.position.set(0, 0, len - 0.02);
+      hand.frustumCulled = false;
+      arm.add(hand);
+      arm.position.set(fx, fy, fz);
+      arm.rotation.set(rot[0], rot[1], rot[2]);
+      vm.add(arm);
+      return arm;
+    };
+    // 右手（扳机手，靠后）+ 左手（前握，靠前），抬高到枪身高度贴合握持
+    mkArm(0.03, -0.02, 0.28, [0.35, -0.05, 0], 0.24);
+    mkArm(-0.03, -0.02, -0.16, [-0.15, 0.12, 0], 0.28);
+  }
+
+  // 创建远程玩家模型（soldier.glb + 队伍配色 + 手持 rifle）
   createRemotePlayer(slot, color) {
     if (this.remotePlayers[slot]) return this.remotePlayers[slot];
     const g = new THREE.Group();
-    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.2 });
-    const dark = new THREE.MeshStandardMaterial({ color: 0x1c2230, roughness: 0.7 });
 
-    // 躯干（胶囊）
-    const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.34, 0.7, 6, 12), mat);
-    torso.position.y = 1.0; torso.castShadow = true; g.add(torso);
-    // 头
-    const head = new THREE.Mesh(new THREE.SphereGeometry(0.26, 16, 12), mat);
-    head.position.y = 1.62; head.castShadow = true; g.add(head);
-    // 面罩
-    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.12, 0.06), new THREE.MeshStandardMaterial({ color: 0x0a1018, metalness: 0.6, roughness: 0.2, emissive: color, emissiveIntensity: 0.25 }));
-    visor.position.set(0, 1.64, 0.22); g.add(visor);
-    // 枪（第三人称）
-    const gun = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.12, 0.55), dark);
-    gun.position.set(0.28, 1.1, 0.18); g.add(gun);
-    // 腿
-    const legGeo = new THREE.CapsuleGeometry(0.14, 0.5, 4, 8);
-    const lLeg = new THREE.Mesh(legGeo, dark); lLeg.position.set(-0.16, 0.4, 0); lLeg.castShadow = true; g.add(lLeg);
-    const rLeg = new THREE.Mesh(legGeo, dark); rLeg.position.set(0.16, 0.4, 0); rLeg.castShadow = true; g.add(rLeg);
-    g.userData = { head, torso, lLeg, rLeg, gun, walkPhase: 0 };
+    if (this.models.soldier) {
+      // 内层容器：把模型原生朝向对齐到「正面朝 +Z」（game.js 约定）
+      const inner = new THREE.Group();
+      inner.rotation.y = Math.PI; // 素材正面朝 -Z，转 180° 使其朝 +Z
+      const body = this.models.soldier.clone(true);
+      const teamCol = new THREE.Color(color);
+      body.traverse((o) => {
+        if (!o.isMesh) return;
+        o.castShadow = true;
+        // 逐实例克隆材质并按队伍上色（护甲/布料向队色偏移，面罩用队色自发光）
+        const mats = Array.isArray(o.material) ? o.material : [o.material];
+        o.material = mats.map((m) => {
+          const nm = m.clone();
+          const name = (m.name || '').toLowerCase();
+          if (name.includes('armor') || name.includes('cloth')) {
+            nm.color.lerp(teamCol, 0.45);
+          }
+          if (name.includes('accent')) {
+            nm.emissive = teamCol.clone();
+            nm.emissiveIntensity = 0.7;
+          }
+          return nm;
+        });
+        o.material = Array.isArray(o.material) && o.material.length === 1 ? o.material[0] : o.material;
+      });
+      inner.add(body);
+
+      // 手持步枪（第三人称）：对齐到双手位置，枪管朝前
+      if (this.models.rifle) {
+        const rifle = this.models.rifle.clone(true);
+        rifle.scale.setScalar(0.9);
+        // inner 有 rotation.y=PI：世界前方(-Z) 对应 inner 局部 +Z
+        // 枪管在素材里指向 -Z，旋转 180° 使其指向 inner 局部 +Z（即世界前方）
+        rifle.rotation.set(0, Math.PI, 0);
+        rifle.position.set(0, 1.04, 0.30); // 双手中点：高度 1.04，身前
+        rifle.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+        inner.add(rifle);
+      }
+      g.add(inner);
+      // dummy 关节，兼容 game.js 的走路动画调用（GLB 为整体网格，不做腿部摆动）
+      g.userData = { head: new THREE.Object3D(), torso: new THREE.Object3D(), lLeg: new THREE.Object3D(), rLeg: new THREE.Object3D(), gun: new THREE.Object3D(), walkPhase: 0 };
+    } else {
+      // 回退：方块玩家
+      this._buildBoxPlayer(g, color);
+    }
 
     g.visible = false;
     this.scene.add(g);
     this.remotePlayers[slot] = g;
     return g;
+  }
+
+  // 回退方块玩家（与旧版一致）
+  _buildBoxPlayer(g, color) {
+    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.6, metalness: 0.2 });
+    const dark = new THREE.MeshStandardMaterial({ color: 0x1c2230, roughness: 0.7 });
+    const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.34, 0.7, 6, 12), mat);
+    torso.position.y = 1.0; torso.castShadow = true; g.add(torso);
+    const head = new THREE.Mesh(new THREE.SphereGeometry(0.26, 16, 12), mat);
+    head.position.y = 1.62; head.castShadow = true; g.add(head);
+    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.12, 0.06), new THREE.MeshStandardMaterial({ color: 0x0a1018, metalness: 0.6, roughness: 0.2, emissive: color, emissiveIntensity: 0.25 }));
+    visor.position.set(0, 1.64, 0.22); g.add(visor);
+    const gun = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.12, 0.55), dark);
+    gun.position.set(0.28, 1.1, 0.18); g.add(gun);
+    const legGeo = new THREE.CapsuleGeometry(0.14, 0.5, 4, 8);
+    const lLeg = new THREE.Mesh(legGeo, dark); lLeg.position.set(-0.16, 0.4, 0); lLeg.castShadow = true; g.add(lLeg);
+    const rLeg = new THREE.Mesh(legGeo, dark); rLeg.position.set(0.16, 0.4, 0); rLeg.castShadow = true; g.add(rLeg);
+    g.userData = { head, torso, lLeg, rLeg, gun, walkPhase: 0 };
   }
 
   removeRemotePlayer(slot) {
