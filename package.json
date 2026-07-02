@@ -1,0 +1,23 @@
+{
+  "name": "arena-fps",
+  "version": "1.0.0",
+  "description": "极速枪战 Arena - 在线 1v1 第一人称 3D 枪战对决（移动端 Web）",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "test": "node test/integration.js"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^25.2.0",
+    "socket.io-client": "^4.8.3"
+  }
+}
