@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 
 const MAP = window.ARENA_MAP;
+const WEAPONS = window.ARENA_WEAPONS;
 const EYE = MAP.EYE_HEIGHT;
 const PH = MAP.PLAYER_HEIGHT;
 const RAD = MAP.PLAYER_RADIUS;
@@ -9,10 +10,11 @@ const RAD = MAP.PLAYER_RADIUS;
 const SPEED = 6.2;
 const GRAVITY = 22;
 const JUMP_V = 7.2;
-const FIRE_INTERVAL = 0.12;   // 秒/发（射速适中）
-const MAG = 30;
-const SPREAD = 0.014;          // 子弹散布
 const STEP_TOL = 0.4;          // 上台阶容差
+
+function freshAmmo() {
+  return Object.fromEntries(WEAPONS.list.map((w) => [w.id, w.mag]));
+}
 
 export class Game {
   constructor({ world, net, input, audio, effects, ui }) {
@@ -37,9 +39,12 @@ export class Game {
     this.alive = true;
     this.invulnUntil = 0;
 
-    this.ammo = MAG;
+    this.weaponId = WEAPONS.defaultId;
+    this.ammoByWeapon = freshAmmo();
+    this.ammo = WEAPONS.byId[this.weaponId].mag;
     this.reloading = false;
     this.lastFire = 0;
+    this.stats = {};
 
     // 远程玩家插值目标
     this.opp = null; // {slot, target:{pos,yaw,pitch,moving}, group}
@@ -58,7 +63,15 @@ export class Game {
     const sp = MAP.spawns[slot];
     this.pos.set(sp.x, 0, sp.z);
     this.vy = 0; this.yaw = sp.yaw; this.pitch = 0;
-    this.alive = true; this.ammo = MAG; this.reloading = false;
+    this.alive = true;
+    this.weaponId = WEAPONS.defaultId;
+    this.ammoByWeapon = freshAmmo();
+    this.ammo = this.ammoByWeapon[this.weaponId];
+    this.reloading = false;
+    this.stats = {};
+    this.world.setViewWeapon(this.weaponId);
+    this.ui.setWeapon(this.weaponId, this.ammoByWeapon, false);
+    this.ui.setAmmo(this.ammo, this._weapon().mag, false);
     this._syncCamera();
   }
 
@@ -82,10 +95,19 @@ export class Game {
     net.on('kill', (d) => this._onKill(d));
     net.on('respawn', (d) => this._onRespawn(d));
     net.on('reloadStart', (d) => this._onReloadStart(d));
-    net.on('reloaded', (d) => { this.ammo = d.ammo; this.reloading = false; this.ui.setAmmo(this.ammo, MAG, false); });
+    net.on('reloaded', (d) => {
+      this._applyAmmoPacket(d);
+      this.reloading = false;
+      this.ui.setAmmo(this.ammo, this._weapon().mag, false);
+    });
+    net.on('weaponChanged', (d) => this._onWeaponChanged(d));
+    net.on('oppWeapon', (d) => {
+      if (this.opp && d.slot === this.opp.slot) this.world.setRemoteWeapon(d.slot, d.weapon);
+    });
     net.on('shotResult', (d) => {
-      this.ammo = d.ammo;
-      this.ui.setAmmo(this.ammo, MAG, this.reloading);
+      this._applyAmmoPacket(d);
+      if (d.stats) this.stats = d.stats;
+      this.ui.setAmmo(this.ammo, this._weapon().mag, this.reloading);
     });
     net.on('emptyMag', () => { this.ui.toast('弹匣已空，请换弹'); });
   }
@@ -93,10 +115,14 @@ export class Game {
   _applySnapshot(s) {
     this.phase = s.phase;
     this.ui.setTimer(s.timeLeft, s.phase);
+    if (this.ui.updateSnapshot) this.ui.updateSnapshot(s);
     const me = s.players.find((p) => p.slot === this.slot);
     const op = s.players.find((p) => p.slot !== this.slot);
     if (me) {
+      this._applyPlayerPacket(me);
+      this.reloading = !!me.reloading;
       this.ui.setHP('me', me.hp);
+      this.ui.setWeapon(this.weaponId, this.ammoByWeapon, this.reloading);
       this.ui.setScore(this.slot === 0 ? [me.score, op ? op.score : 0] : [op ? op.score : 0, me.score], this.slot);
       // 死亡 / 复活倒计时
       if (!me.alive) {
@@ -106,6 +132,7 @@ export class Game {
     }
     if (op) {
       this.ui.setHP('op', op.hp);
+      if (op.weapon) this.world.setRemoteWeapon(op.slot, op.weapon);
       if (!op.connected) this.ui.toast('对手连接中…');
     }
   }
@@ -116,8 +143,9 @@ export class Game {
       const group = this.world.createRemotePlayer(d.slot, color);
       this.opp = { slot: d.slot, group, target: null, cur: null };
     }
-    this.opp.target = { pos: d.pos, yaw: d.yaw, pitch: d.pitch, moving: d.moving };
+    this.opp.target = { pos: d.pos, yaw: d.yaw, pitch: d.pitch, moving: d.moving, weapon: d.weapon };
     this.opp.group.visible = true;
+    if (d.weapon) this.world.setRemoteWeapon(d.slot, d.weapon);
     if (!this.opp.cur) {
       this.opp.cur = { pos: { ...d.pos }, yaw: d.yaw, moving: d.moving };
     }
@@ -126,6 +154,7 @@ export class Game {
   _onOppShot(d) {
     const origin = new THREE.Vector3(d.origin.x, d.origin.y, d.origin.z);
     const dir = new THREE.Vector3(d.dir.x, d.dir.y, d.dir.z);
+    if (d.weapon && this.opp) this.world.setRemoteWeapon(d.slot, d.weapon);
     this.fx.muzzleFlash(origin.clone().add(dir.clone().multiplyScalar(0.4)));
     this.fx.tracer(origin, dir, 60);
     this.audio.shoot();
@@ -164,18 +193,51 @@ export class Game {
       this.pos.set(d.pos.x, d.pos.y - EYE, d.pos.z);
       this.vy = 0; this.yaw = d.yaw; this.pitch = 0; this.alive = true;
       this.invulnUntil = d.invulnUntil;
-      this.ammo = MAG; this.reloading = false;
-      this.ui.setAmmo(this.ammo, MAG, false);
+      this._applyPlayerPacket(d);
+      this.reloading = false;
+      this.ui.setWeapon(this.weaponId, this.ammoByWeapon, false);
+      this.ui.setAmmo(this.ammo, this._weapon().mag, false);
       this.ui.hideDeath();
       this._syncCamera();
     }
   }
 
   _onReloadStart(d) {
+    this._applyAmmoPacket(d);
     this.reloading = true;
-    this.ui.setAmmo(this.ammo, MAG, true);
+    this.ui.setAmmo(this.ammo, this._weapon().mag, true);
     this.audio.reload();
     this._reloadAnimEnd = performance.now() + d.duration;
+  }
+
+  _weapon() { return WEAPONS.byId[this.weaponId] || WEAPONS.byId[WEAPONS.defaultId]; }
+
+  _applyAmmoPacket(d) {
+    if (!d) return;
+    const prevWeapon = this.weaponId;
+    if (d.ammoByWeapon) this.ammoByWeapon = { ...this.ammoByWeapon, ...d.ammoByWeapon };
+    if (d.weapon && WEAPONS.byId[d.weapon]) this.weaponId = d.weapon;
+    if (typeof d.ammo === 'number') this.ammoByWeapon[this.weaponId] = d.ammo;
+    this.ammo = this.ammoByWeapon[this.weaponId] ?? this._weapon().mag;
+    this.ui.setWeapon(this.weaponId, this.ammoByWeapon, this.reloading);
+    if (prevWeapon !== this.weaponId) this.world.setViewWeapon(this.weaponId);
+  }
+
+  _applyPlayerPacket(p) {
+    if (!p) return;
+    this._applyAmmoPacket({
+      weapon: p.weapon,
+      ammo: p.ammo,
+      ammoByWeapon: p.ammoByWeapon,
+      mag: p.mag,
+    });
+    if (p.stats) this.stats = p.stats;
+  }
+
+  _onWeaponChanged(d) {
+    this.reloading = false;
+    this._applyAmmoPacket(d);
+    this.ui.setAmmo(this.ammo, this._weapon().mag, false);
   }
 
   // ---------------------------------------------------------------- 主循环
@@ -189,9 +251,10 @@ export class Game {
 
   _update(dt) {
     const playing = this.phase === 'playing' || this.phase === 'overtime';
+    const blocked = this.input.isGameplayBlocked && this.input.isGameplayBlocked();
 
     // 视角
-    const look = this.input.consumeLook();
+    const look = blocked ? { dx: 0, dy: 0 } : this.input.consumeLook();
     this.yaw -= look.dx * this.input.lookSensitivity;
     this.pitch -= look.dy * this.input.lookSensitivity;
     this.pitch = Math.max(-1.45, Math.min(1.45, this.pitch));
@@ -199,17 +262,20 @@ export class Game {
     // 后坐力恢复
     this.recoil += (0 - this.recoil) * Math.min(1, dt * 12);
 
-    if (this.alive && playing) {
+    if (this.alive && playing && !blocked) {
       this._movePlayer(dt);
     } else {
       this.input.consumeReload();
       this.input.consumeJump();
+      this.input.consumeWeaponSwitch();
     }
 
     // 先同步相机（位置 + 朝向），保证射击方向使用当前帧的瞄准
     this._syncCamera();
 
-    if (this.alive && playing) {
+    if (this.alive && playing && !blocked) {
+      const weaponReq = this.input.consumeWeaponSwitch();
+      if (weaponReq) this._switchWeapon(weaponReq);
       this._handleShooting(dt);
       if (this.input.consumeReload()) this._startReload();
     }
@@ -313,20 +379,23 @@ export class Game {
 
   _handleShooting(dt) {
     if (!this.input.firing) return;
+    const weapon = this._weapon();
     const now = performance.now() / 1000;
-    if (now - this.lastFire < FIRE_INTERVAL) return;
+    if (now - this.lastFire < weapon.fireInterval) return;
     if (this.reloading) return;
     if (this.ammo <= 0) { this._startReload(); return; }
     this.lastFire = now;
     this.ammo -= 1;
-    this.ui.setAmmo(this.ammo, MAG, false);
+    this.ammoByWeapon[this.weaponId] = this.ammo;
+    this.ui.setAmmo(this.ammo, weapon.mag, false);
+    this.ui.setWeapon(this.weaponId, this.ammoByWeapon, false);
 
     // 朝向 + 散布
     this.world.camera.getWorldDirection(this._tmpDir);
     const dir = this._tmpDir.clone();
-    dir.x += (Math.random() - 0.5) * SPREAD;
-    dir.y += (Math.random() - 0.5) * SPREAD;
-    dir.z += (Math.random() - 0.5) * SPREAD;
+    dir.x += (Math.random() - 0.5) * weapon.spread;
+    dir.y += (Math.random() - 0.5) * weapon.spread;
+    dir.z += (Math.random() - 0.5) * weapon.spread;
     dir.normalize();
 
     // 发送服务端裁决
@@ -337,8 +406,9 @@ export class Game {
   }
 
   _fireFeedback(dir) {
+    const weapon = this._weapon();
     this.audio.shoot();
-    this.recoil = Math.min(0.09, this.recoil + 0.03);
+    this.recoil = Math.min(0.11, this.recoil + weapon.recoil);
     // 枪口世界坐标
     const muzzleWorld = new THREE.Vector3();
     this.world.muzzle.getWorldPosition(muzzleWorld);
@@ -357,7 +427,7 @@ export class Game {
       this.fx.impact(pt, 0xcfd6e0);
     }
     // 视模型后坐
-    this._vmKick = 0.06;
+    this._vmKick = weapon.kick;
   }
 
   _rayWall(o, d) {
@@ -404,11 +474,29 @@ export class Game {
   }
 
   _startReload() {
-    if (this.reloading || this.ammo >= MAG || !this.alive) return;
+    const weapon = this._weapon();
+    if (this.reloading || this.ammo >= weapon.mag || !this.alive) return;
     this.net.reload();
     this.reloading = true;
-    this.ui.setAmmo(this.ammo, MAG, true);
+    this.ui.setAmmo(this.ammo, weapon.mag, true);
     this.audio.reload();
+  }
+
+  _switchWeapon(request) {
+    const ids = WEAPONS.ids;
+    let next = request;
+    if (request === 'toggle') {
+      const idx = ids.indexOf(this.weaponId);
+      next = ids[(idx + 1) % ids.length];
+    }
+    if (!WEAPONS.byId[next] || next === this.weaponId) return;
+    this.weaponId = next;
+    this.reloading = false;
+    this.ammo = this.ammoByWeapon[this.weaponId] ?? this._weapon().mag;
+    this.world.setViewWeapon(this.weaponId);
+    this.ui.setWeapon(this.weaponId, this.ammoByWeapon, false);
+    this.ui.setAmmo(this.ammo, this._weapon().mag, false);
+    this.net.switchWeapon(this.weaponId);
   }
 
   _syncCamera() {

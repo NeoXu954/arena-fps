@@ -16,6 +16,7 @@ const express = require('express');
 const { Server } = require('socket.io');
 
 const MAP = require('./public/shared/map.js');
+const WEAPONS = require('./public/shared/weapons.js');
 
 const app = express();
 const server = http.createServer(app);
@@ -35,15 +36,11 @@ app.get('/health', (req, res) => res.json({ ok: true, rooms: rooms.size }));
 // 游戏常量
 // ---------------------------------------------------------------------------
 const MAX_HP = 100;
-const DAMAGE = 20;
-const MAG_SIZE = 30;
-const RELOAD_MS = 1500;
 const RESPAWN_MS = 3000;
 const INVULN_MS = 1000;
 const COUNTDOWN_MS = 3000;
 const MATCH_MS = 180000;   // 3 分钟
 const OVERTIME_MS = 30000; // 加时 30 秒
-const SHOT_COOLDOWN_MS = 90; // 服务端射速上限（防连点作弊）
 const TICK_HZ = 30;
 const SNAPSHOT_EVERY = 2;  // 每 2 个 tick 广播一次权威快照（≈15Hz）
 const DROP_GRACE_MS = 10000; // 断线宽限，期间可重连
@@ -64,8 +61,50 @@ function genRoomId() {
   return id;
 }
 
+function weaponConfig(id) {
+  return WEAPONS.byId[id] || WEAPONS.byId[WEAPONS.defaultId];
+}
+
+function freshAmmo() {
+  return Object.fromEntries(WEAPONS.list.map((w) => [w.id, w.mag]));
+}
+
+function freshStats() {
+  return {
+    shots: 0,
+    hits: 0,
+    kills: 0,
+    deaths: 0,
+    damageDealt: 0,
+    damageTaken: 0,
+    reloads: 0,
+  };
+}
+
+function currentAmmo(p) {
+  if (!p.ammoByWeapon) p.ammoByWeapon = freshAmmo();
+  const cfg = weaponConfig(p.weapon);
+  if (typeof p.ammoByWeapon[cfg.id] !== 'number') p.ammoByWeapon[cfg.id] = cfg.mag;
+  return p.ammoByWeapon[cfg.id];
+}
+
+function setCurrentAmmo(p, ammo) {
+  const cfg = weaponConfig(p.weapon);
+  if (!p.ammoByWeapon) p.ammoByWeapon = freshAmmo();
+  p.ammoByWeapon[cfg.id] = Math.max(0, Math.min(cfg.mag, ammo));
+  p.ammo = p.ammoByWeapon[cfg.id];
+  return p.ammo;
+}
+
+function syncCurrentAmmo(p) {
+  p.ammo = currentAmmo(p);
+  return p.ammo;
+}
+
 function makePlayer(slot) {
   const sp = MAP.spawns[slot];
+  const weapon = WEAPONS.defaultId;
+  const ammoByWeapon = freshAmmo();
   return {
     token: crypto.randomBytes(8).toString('hex'),
     socketId: null,
@@ -77,11 +116,14 @@ function makePlayer(slot) {
     pitch: 0,
     moving: false,
     hp: MAX_HP,
-    ammo: MAG_SIZE,
+    weapon,
+    ammoByWeapon,
+    ammo: ammoByWeapon[weapon],
     reloading: false,
     reloadEnd: 0,
     alive: true,
     score: 0,
+    stats: freshStats(),
     respawnAt: 0,
     invulnUntil: 0,
     lastShot: 0,
@@ -142,16 +184,22 @@ function roomActivePlayers(room) {
 }
 
 function publicPlayer(p) {
+  const cfg = weaponConfig(p.weapon);
+  syncCurrentAmmo(p);
   return {
     slot: p.slot,
     color: p.color,
     name: p.name,
     hp: p.hp,
     ammo: p.ammo,
+    ammoByWeapon: { ...p.ammoByWeapon },
+    weapon: cfg.id,
+    mag: cfg.mag,
     reloading: p.reloading,
     alive: p.alive,
     score: p.score,
     connected: p.connected,
+    stats: { ...p.stats },
   };
 }
 
@@ -246,8 +294,11 @@ function spawnPlayer(p) {
   p.yaw = sp.yaw;
   p.pitch = 0;
   p.hp = MAX_HP;
-  p.ammo = MAG_SIZE;
+  p.weapon = WEAPONS.defaultId;
+  p.ammoByWeapon = freshAmmo();
+  syncCurrentAmmo(p);
   p.reloading = false;
+  p.reloadEnd = 0;
   p.alive = true;
   p.invulnUntil = Date.now() + INVULN_MS;
 }
@@ -256,6 +307,7 @@ function startMatch(room) {
   room.players.forEach((p) => {
     if (!p) return;
     p.score = 0;
+    p.stats = freshStats();
     spawnPlayer(p);
   });
   room.phase = 'countdown';
@@ -279,6 +331,7 @@ function endMatch(room) {
     const winner = a.score > b.score ? a.slot : b.slot;
     result = { winner, scores: [a.score, b.score] };
   }
+  result.players = room.players.filter(Boolean).map(publicPlayer);
   room.result = result;
   emitRoom(room, 'gameOver', { result, players: room.players.filter(Boolean).map(publicPlayer) });
   broadcastState(room);
@@ -297,13 +350,23 @@ function gameTick(room) {
       spawnPlayer(p);
       p.respawnAt = 0;
       if (p.isBot && p.ai) { p.ai.seenAt = 0; p.ai.lastSeenPos = null; p.ai.wanderTarget = null; }
-      emitRoom(room, 'respawn', { slot: p.slot, pos: p.pos, yaw: p.yaw, invulnUntil: p.invulnUntil });
+      emitRoom(room, 'respawn', {
+        slot: p.slot,
+        pos: p.pos,
+        yaw: p.yaw,
+        invulnUntil: p.invulnUntil,
+        weapon: p.weapon,
+        ammo: p.ammo,
+        ammoByWeapon: { ...p.ammoByWeapon },
+        mag: weaponConfig(p.weapon).mag,
+      });
     }
     // 换弹完成
     if (p.reloading && now >= p.reloadEnd) {
+      const cfg = weaponConfig(p.weapon);
       p.reloading = false;
-      p.ammo = MAG_SIZE;
-      if (p.socketId) io.to(p.socketId).emit('reloaded', { ammo: p.ammo });
+      setCurrentAmmo(p, cfg.mag);
+      if (p.socketId) io.to(p.socketId).emit('reloaded', { weapon: cfg.id, ammo: p.ammo, mag: cfg.mag });
     }
   });
 
@@ -338,9 +401,11 @@ function gameTick(room) {
   // 权威快照
   if (room.tick % SNAPSHOT_EVERY === 0) {
     const players = room.players.filter(Boolean).map((p) => ({
-      slot: p.slot, hp: p.hp, ammo: p.ammo, reloading: p.reloading,
+      slot: p.slot, hp: p.hp, ammo: syncCurrentAmmo(p), ammoByWeapon: { ...p.ammoByWeapon },
+      weapon: weaponConfig(p.weapon).id, mag: weaponConfig(p.weapon).mag, reloading: p.reloading,
       alive: p.alive, score: p.score, connected: p.connected,
       respawnIn: p.alive ? 0 : Math.max(0, p.respawnAt - now),
+      stats: { ...p.stats },
     }));
     let timeLeft = 0;
     if (room.phase === 'playing' || room.phase === 'overtime' || room.phase === 'countdown') {
@@ -354,11 +419,16 @@ function applyKill(room, killer, victim) {
   victim.alive = false;
   victim.hp = 0;
   victim.respawnAt = Date.now() + RESPAWN_MS;
-  if (killer) killer.score += 1;
+  if (killer) {
+    killer.score += 1;
+    killer.stats.kills += 1;
+  }
+  victim.stats.deaths += 1;
   emitRoom(room, 'kill', {
     killer: killer ? killer.slot : -1,
     victim: victim.slot,
     scores: room.players.filter(Boolean).map((p) => p.score),
+    stats: room.players.filter(Boolean).map((p) => ({ slot: p.slot, stats: { ...p.stats } })),
   });
 
   // 加时赛：先击杀者直接获胜
@@ -391,8 +461,10 @@ function botLineOfSight(shooter, target) {
 // bot 射击：走与真人相同的权威裁决（命中/扣血/击杀/计分/广播）
 function botShoot(room, bot, target) {
   const now = Date.now();
-  if (bot.ammo <= 0 || bot.reloading) return;
-  bot.ammo -= 1;
+  const cfgWeapon = weaponConfig(bot.weapon);
+  if (currentAmmo(bot) <= 0 || bot.reloading) return;
+  setCurrentAmmo(bot, currentAmmo(bot) - 1);
+  bot.stats.shots += 1;
 
   const origin = { x: bot.pos.x, y: bot.pos.y, z: bot.pos.z };
   const cfg = bot.ai.cfg;
@@ -409,7 +481,7 @@ function botShoot(room, bot, target) {
   });
 
   // 让玩家看到 bot 开火（弹道/枪口火光）
-  emitRoom(room, 'oppShot', { slot: bot.slot, origin, dir });
+  emitRoom(room, 'oppShot', { slot: bot.slot, origin, dir, weapon: cfgWeapon.id });
 
   if (target.alive && now > target.invulnUntil) {
     const tPlayer = rayPlayer(origin, dir, target);
@@ -421,23 +493,28 @@ function botShoot(room, bot, target) {
         if (tb !== Infinity && tb < tPlayer - 0.05) { blocked = true; break; }
       }
       if (!blocked) {
-        target.hp = Math.max(0, target.hp - DAMAGE);
+        const before = target.hp;
+        target.hp = Math.max(0, target.hp - cfgWeapon.damage);
+        const dealt = before - target.hp;
+        bot.stats.hits += 1;
+        bot.stats.damageDealt += dealt;
+        target.stats.damageTaken += dealt;
         const point = {
           x: origin.x + dir.x * tPlayer,
           y: origin.y + dir.y * tPlayer,
           z: origin.z + dir.z * tPlayer,
         };
         emitRoom(room, 'hit', {
-          attacker: bot.slot, victim: target.slot, hp: target.hp, point, dmg: DAMAGE,
+          attacker: bot.slot, victim: target.slot, hp: target.hp, point, dmg: dealt, weapon: cfgWeapon.id,
         });
         if (target.hp <= 0) applyKill(room, bot, target);
       }
     }
   }
 
-  if (bot.ammo <= 0) {
+  if (currentAmmo(bot) <= 0) {
     bot.reloading = true;
-    bot.reloadEnd = now + RELOAD_MS;
+    bot.reloadEnd = now + cfgWeapon.reloadMs;
   }
 }
 
@@ -555,7 +632,7 @@ function updateBots(room, dt) {
     bot.pos.z = Math.max(-lim, Math.min(lim, bot.pos.z));
 
     // 射击：看得见 + 过了反应延迟 + 过了射击间隔
-    if (canSee && !bot.reloading && bot.ammo > 0 &&
+    if (canSee && !bot.reloading && currentAmmo(bot) > 0 &&
         ai.seenAt && now - ai.seenAt >= cfg.reactMs && now >= ai.nextFireAt) {
       botShoot(room, bot, target);
       ai.nextFireAt = now + cfg.fireGap + Math.random() * cfg.fireGap * 0.4;
@@ -564,7 +641,7 @@ function updateBots(room, dt) {
     // 广播 bot 状态（复用 oppState，客户端零改动）
     emitRoom(room, 'oppState', {
       slot: bot.slot, pos: { x: bot.pos.x, y: bot.pos.y, z: bot.pos.z },
-      yaw: bot.yaw, pitch: 0, moving: bot.moving,
+      yaw: bot.yaw, pitch: 0, moving: bot.moving, weapon: bot.weapon,
     });
   }
 }
@@ -682,8 +759,29 @@ io.on('connection', (socket) => {
     p.moving = !!m.moving;
     // 转发给对手
     socket.to(room.id).emit('oppState', {
-      slot: p.slot, pos: p.pos, yaw: p.yaw, pitch: p.pitch, moving: p.moving,
+      slot: p.slot, pos: p.pos, yaw: p.yaw, pitch: p.pitch, moving: p.moving, weapon: p.weapon,
     });
+  });
+
+  socket.on('switchWeapon', (data) => {
+    const room = currentRoom();
+    const p = currentPlayer();
+    if (!room || !p || !p.alive) return;
+    const next = data && typeof data.weapon === 'string' ? data.weapon : '';
+    if (!WEAPONS.byId[next] || p.weapon === next) return;
+    p.weapon = next;
+    p.reloading = false;
+    p.reloadEnd = 0;
+    syncCurrentAmmo(p);
+    const cfg = weaponConfig(p.weapon);
+    if (p.socketId) io.to(p.socketId).emit('weaponChanged', {
+      weapon: cfg.id,
+      ammo: p.ammo,
+      ammoByWeapon: { ...p.ammoByWeapon },
+      mag: cfg.mag,
+      reloading: false,
+    });
+    socket.to(room.id).emit('oppWeapon', { slot: p.slot, weapon: cfg.id });
   });
 
   // 射击（服务端裁决命中）
@@ -692,17 +790,19 @@ io.on('connection', (socket) => {
     const shooter = currentPlayer();
     if (!room || !shooter) return;
     if (room.phase !== 'playing' && room.phase !== 'overtime') return;
-    if (!shooter.alive || shooter.reloading || shooter.ammo <= 0) return;
+    const cfg = weaponConfig(shooter.weapon);
+    if (!shooter.alive || shooter.reloading || currentAmmo(shooter) <= 0) return;
     const now = Date.now();
-    if (now - shooter.lastShot < SHOT_COOLDOWN_MS) return;
+    if (now - shooter.lastShot < cfg.cooldownMs) return;
     shooter.lastShot = now;
-    shooter.ammo -= 1;
+    setCurrentAmmo(shooter, currentAmmo(shooter) - 1);
+    shooter.stats.shots += 1;
 
     const origin = { x: shooter.pos.x, y: shooter.pos.y, z: shooter.pos.z };
     const dir = normalize(data && data.dir ? data.dir : { x: 0, y: 0, z: -1 });
 
     // 让对手看到开火（弹道/枪口火光）
-    socket.to(room.id).emit('oppShot', { slot: shooter.slot, origin, dir });
+    socket.to(room.id).emit('oppShot', { slot: shooter.slot, origin, dir, weapon: cfg.id });
 
     // 找对手
     const target = room.players.find((p) => p && p.slot !== shooter.slot && p.connected);
@@ -717,7 +817,12 @@ io.on('connection', (socket) => {
           if (tb !== Infinity && tb < tPlayer - 0.05) { blocked = true; break; }
         }
         if (!blocked) {
-          target.hp = Math.max(0, target.hp - DAMAGE);
+          const before = target.hp;
+          target.hp = Math.max(0, target.hp - cfg.damage);
+          const dealt = before - target.hp;
+          shooter.stats.hits += 1;
+          shooter.stats.damageDealt += dealt;
+          target.stats.damageTaken += dealt;
           const point = {
             x: origin.x + dir.x * tPlayer,
             y: origin.y + dir.y * tPlayer,
@@ -725,7 +830,7 @@ io.on('connection', (socket) => {
           };
           hitInfo = { tPlayer, point };
           emitRoom(room, 'hit', {
-            attacker: shooter.slot, victim: target.slot, hp: target.hp, point, dmg: DAMAGE,
+            attacker: shooter.slot, victim: target.slot, hp: target.hp, point, dmg: dealt, weapon: cfg.id,
           });
           if (target.hp <= 0) applyKill(room, shooter, target);
         }
@@ -735,11 +840,17 @@ io.on('connection', (socket) => {
     // 通知射手命中反馈 + 弹药
     if (shooter.socketId) {
       io.to(shooter.socketId).emit('shotResult', {
-        ammo: shooter.ammo, hit: !!hitInfo, kill: hitInfo && target && target.hp <= 0,
+        weapon: cfg.id,
+        ammo: shooter.ammo,
+        ammoByWeapon: { ...shooter.ammoByWeapon },
+        mag: cfg.mag,
+        hit: !!hitInfo,
+        kill: hitInfo && target && target.hp <= 0,
+        stats: { ...shooter.stats },
       });
     }
     // 弹药打空自动提示
-    if (shooter.ammo <= 0 && shooter.socketId) {
+    if (currentAmmo(shooter) <= 0 && shooter.socketId) {
       io.to(shooter.socketId).emit('emptyMag', {});
     }
   });
@@ -747,10 +858,13 @@ io.on('connection', (socket) => {
   // 换弹（服务端计时）
   socket.on('reload', () => {
     const p = currentPlayer();
-    if (!p || !p.alive || p.reloading || p.ammo >= MAG_SIZE) return;
+    if (!p || !p.alive || p.reloading) return;
+    const cfg = weaponConfig(p.weapon);
+    if (currentAmmo(p) >= cfg.mag) return;
     p.reloading = true;
-    p.reloadEnd = Date.now() + RELOAD_MS;
-    if (p.socketId) io.to(p.socketId).emit('reloadStart', { duration: RELOAD_MS });
+    p.reloadEnd = Date.now() + cfg.reloadMs;
+    p.stats.reloads += 1;
+    if (p.socketId) io.to(p.socketId).emit('reloadStart', { weapon: cfg.id, duration: cfg.reloadMs, ammo: p.ammo, mag: cfg.mag });
   });
 
   // 再来一局

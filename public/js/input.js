@@ -7,6 +7,7 @@ export class Input {
     this.firing = false;
     this._jumpQueued = false;
     this._reloadQueued = false;
+    this._weaponQueued = null;
     this.lookSensitivity = 0.0042; // 弧度/像素
 
     this._joyId = null;
@@ -22,6 +23,9 @@ export class Input {
 
   consumeJump() { const j = this._jumpQueued; this._jumpQueued = false; return j; }
   consumeReload() { const r = this._reloadQueued; this._reloadQueued = false; return r; }
+  consumeWeaponSwitch() { const w = this._weaponQueued; this._weaponQueued = null; return w; }
+  setSensitivityScale(scale) { this.lookSensitivity = 0.0042 * Math.max(0.4, Math.min(1.8, scale)); }
+  isGameplayBlocked() { return document.body.classList.contains('menu-open'); }
   consumeLook() {
     const dx = this.lookDX, dy = this.lookDY;
     this.lookDX = 0; this.lookDY = 0;
@@ -47,12 +51,13 @@ export class Input {
     };
 
     joy.addEventListener('touchstart', (e) => {
+      if (this.isGameplayBlocked()) return;
       e.preventDefault();
       const t = e.changedTouches[0];
       start(t.identifier, t.clientX, t.clientY);
     }, { passive: false });
     document.addEventListener('touchmove', (e) => {
-      if (this._joyId === null) return;
+      if (this._joyId === null || this.isGameplayBlocked()) return;
       for (const t of e.changedTouches) {
         if (t.identifier === this._joyId) { updateGlobal(t.clientX, t.clientY); }
       }
@@ -80,6 +85,7 @@ export class Input {
     const canvas = document.getElementById('game-canvas');
     let lastX = 0, lastY = 0;
     canvas.addEventListener('touchstart', (e) => {
+      if (this.isGameplayBlocked()) return;
       for (const t of e.changedTouches) {
         // 仅右侧区域作为视角控制，避免与摇杆冲突
         if (this._lookId === null && t.clientX > window.innerWidth * 0.34) {
@@ -88,6 +94,7 @@ export class Input {
       }
     }, { passive: false });
     canvas.addEventListener('touchmove', (e) => {
+      if (this.isGameplayBlocked()) return;
       for (const t of e.changedTouches) {
         if (t.identifier === this._lookId) {
           this.lookDX += t.clientX - lastX;
@@ -104,17 +111,17 @@ export class Input {
 
     // 桌面：指针锁定鼠标转向
     canvas.addEventListener('click', () => {
-      if (!('ontouchstart' in window) && document.body.classList.contains('in-game')) {
+      if (!('ontouchstart' in window) && document.body.classList.contains('in-game') && !this.isGameplayBlocked()) {
         canvas.requestPointerLock && canvas.requestPointerLock();
       }
     });
     document.addEventListener('mousemove', (e) => {
-      if (document.pointerLockElement === canvas) {
+      if (document.pointerLockElement === canvas && !this.isGameplayBlocked()) {
         this.lookDX += e.movementX; this.lookDY += e.movementY;
       }
     });
     document.addEventListener('mousedown', (e) => {
-      if (document.pointerLockElement === canvas && e.button === 0) this.firing = true;
+      if (document.pointerLockElement === canvas && e.button === 0 && !this.isGameplayBlocked()) this.firing = true;
     });
     document.addEventListener('mouseup', (e) => {
       if (e.button === 0) this.firing = false;
@@ -134,19 +141,32 @@ export class Input {
 
   _setupButtons() {
     this._bindButton(document.getElementById('btn-fire'),
-      () => { this.firing = true; }, () => { this.firing = false; });
+      () => { if (!this.isGameplayBlocked()) this.firing = true; }, () => { this.firing = false; });
     this._bindButton(document.getElementById('btn-reload'),
-      () => { this._reloadQueued = true; });
+      () => { if (!this.isGameplayBlocked()) this._reloadQueued = true; });
     this._bindButton(document.getElementById('btn-jump'),
-      () => { this._jumpQueued = true; });
+      () => { if (!this.isGameplayBlocked()) this._jumpQueued = true; });
+    this._bindButton(document.getElementById('btn-weapon'),
+      () => { if (!this.isGameplayBlocked()) this._weaponQueued = 'toggle'; });
+    document.querySelectorAll('.weapon-slot').forEach((el) => {
+      this._bindButton(el, () => {
+        if (!this.isGameplayBlocked()) this._weaponQueued = el.dataset.weapon;
+      });
+    });
   }
 
   _setupKeyboard() {
     const keys = this.keys = {};
     window.addEventListener('keydown', (e) => {
+      const tag = (e.target && e.target.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+      if (this.isGameplayBlocked()) return;
       keys[e.code] = true;
       if (e.code === 'KeyR') this._reloadQueued = true;
       if (e.code === 'Space') this._jumpQueued = true;
+      if (e.code === 'Digit1') this._weaponQueued = 'rifle';
+      if (e.code === 'Digit2') this._weaponQueued = 'pistol';
+      if (e.code === 'KeyQ') this._weaponQueued = 'toggle';
       this._applyKeys();
     });
     window.addEventListener('keyup', (e) => { keys[e.code] = false; this._applyKeys(); });
@@ -155,6 +175,10 @@ export class Input {
   _applyKeys() {
     const k = this.keys;
     if (!k) return;
+    if (this.isGameplayBlocked()) {
+      this.move.x = 0; this.move.y = 0; this.firing = false;
+      return;
+    }
     // 仅当没有摇杆触摸时由键盘驱动
     if (this._joyId !== null) return;
     let x = 0, y = 0;

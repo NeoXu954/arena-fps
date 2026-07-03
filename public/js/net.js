@@ -17,7 +17,8 @@ export class Net {
     const passthrough = [
       'roomState', 'snapshot', 'matchStart', 'countdown', 'overtime', 'gameOver',
       'oppState', 'oppShot', 'hit', 'kill', 'respawn', 'reloadStart', 'reloaded',
-      'shotResult', 'emptyMag', 'opponentLeft', 'opponentDisconnected', 'opponentReconnected',
+      'shotResult', 'emptyMag', 'weaponChanged', 'oppWeapon',
+      'opponentLeft', 'opponentDisconnected', 'opponentReconnected',
     ];
     passthrough.forEach((ev) => this.socket.on(ev, (d) => this._emitLocal(ev, d)));
 
@@ -75,6 +76,7 @@ export class Net {
 
   sendMove(state) { this.socket.emit('move', state); }
   shoot(dir) { this.socket.emit('shoot', { dir }); }
+  switchWeapon(weapon) { this.socket.emit('switchWeapon', { weapon }); }
   reload() { this.socket.emit('reload'); }
   rematch() { this.socket.emit('rematch'); }
 }

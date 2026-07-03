@@ -8,7 +8,7 @@ function client(name) {
   s.name = name; s.events = [];
   ['roomState', 'snapshot', 'matchStart', 'overtime', 'gameOver', 'oppState',
    'oppShot', 'hit', 'kill', 'respawn', 'reloadStart', 'reloaded', 'shotResult',
-   'emptyMag', 'opponentLeft'].forEach((e) => s.on(e, (d) => s.events.push({ e, d })));
+   'emptyMag', 'weaponChanged', 'oppWeapon', 'opponentLeft'].forEach((e) => s.on(e, (d) => s.events.push({ e, d })));
   return s;
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -54,6 +54,16 @@ function assert(c, m) { if (!c) { console.error('❌ FAIL:', m); process.exitCod
   b.emit('move', { pos: { x: 10, y: 1.5, z: -2 }, yaw: Math.PI, pitch: 0, moving: false });
   await sleep(150);
 
+  // 武器切换：A 切到手枪再切回步枪，验证服务端同步弹匣和武器状态
+  a.events.length = 0; b.events.length = 0;
+  a.emit('switchWeapon', { weapon: 'pistol' });
+  await sleep(120);
+  assert(a.events.some((x) => x.e === 'weaponChanged' && x.d.weapon === 'pistol' && x.d.ammo === 12), 'A 切换到手枪并收到 12 发弹匣');
+  assert(b.events.some((x) => x.e === 'oppWeapon' && x.d.weapon === 'pistol'), 'B 收到 A 的手枪切换同步');
+  a.emit('switchWeapon', { weapon: 'rifle' });
+  await sleep(120);
+  assert(a.events.some((x) => x.e === 'weaponChanged' && x.d.weapon === 'rifle' && x.d.ammo === 30), 'A 切回步枪并收到 30 发弹匣');
+
   // A 朝 -Z 连续射击 5 次（每次 20 伤害，应在第 5 发击杀）
   a.events.length = 0; b.events.length = 0;
   for (let i = 0; i < 5; i++) {
@@ -63,6 +73,8 @@ function assert(c, m) { if (!c) { console.error('❌ FAIL:', m); process.exitCod
   await sleep(300);
   const hits = a.events.filter((x) => x.e === 'shotResult' && x.d.hit).length;
   assert(hits >= 4, `A 命中次数 >=4（实际 ${hits}）`);
+  const lastHit = a.events.filter((x) => x.e === 'shotResult' && x.d.hit).pop();
+  assert(lastHit && lastHit.d.stats && lastHit.d.stats.damageDealt >= 100, 'A 收到服务端命中/伤害统计');
   const kill = a.events.find((x) => x.e === 'kill');
   assert(kill && kill.d.killer === a.slot && kill.d.victim === b.slot, 'A 击杀 B，击杀事件正确');
   assert(kill && kill.d.scores[a.slot] === 1, 'A 比分 +1');

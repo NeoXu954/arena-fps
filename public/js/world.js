@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 const MAP = window.ARENA_MAP;
+const WEAPONS = window.ARENA_WEAPONS;
 const MODEL_URL = '/assets/models/';
 
 // 各建筑 GLB 的基准尺寸（米，X/Y/Z），必须与 gen_models.py 一致。
@@ -31,6 +32,8 @@ export class World {
     this.remotePlayers = {}; // slot -> mesh group
     this.models = {};        // 预加载的 GLB 场景缓存
     this.modelsReady = false;
+    this.activeViewWeapon = WEAPONS.defaultId;
+    this.pixelRatioScale = 1;
 
     this._initRenderer();
     this._initScene();
@@ -48,7 +51,7 @@ export class World {
     const renderer = new THREE.WebGLRenderer({
       canvas: this.canvas, antialias: window.devicePixelRatio < 2, powerPreference: 'high-performance',
     });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio * this.pixelRatioScale, 2));
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
@@ -109,7 +112,7 @@ export class World {
   // GLB 预加载
   _preload() {
     const loader = new GLTFLoader();
-    const names = ['soldier', 'rifle', 'wall', 'cover', 'crate', 'stairs'];
+    const names = ['soldier', 'rifle', 'pistol', 'wall', 'cover', 'crate', 'stairs'];
     const load = (name) => new Promise((resolve, reject) => {
       loader.load(MODEL_URL + name + '.glb',
         (gltf) => { this.models[name] = gltf.scene; resolve(); },
@@ -247,16 +250,7 @@ export class World {
     const vm = this.viewModel;
     const tmp = vm.getObjectByName('__tmpgun');
     if (tmp) vm.remove(tmp);
-    if (!this.models.rifle) return;
-
-    const gun = this.models.rifle.clone(true);
-    // 朝向：让枪管指向 -Z（屏幕里），并摆到右手位置
-    gun.scale.setScalar(0.9);
-    gun.rotation.set(0, 0, 0);
-    gun.position.set(0, 0, 0.08);
-    gun.traverse((o) => { if (o.isMesh) { o.castShadow = false; o.frustumCulled = false; } });
-    vm.add(gun);
-    this.gunModel = gun;
+    this.setViewWeapon(this.activeViewWeapon || WEAPONS.defaultId);
 
     // 第一人称手臂：一对军绿手臂握住步枪，消除枪悬空的空隙
     const armMat = new THREE.MeshStandardMaterial({ color: 0x3a4a2c, roughness: 0.85 });
@@ -280,6 +274,53 @@ export class World {
     // 右手（扳机手，靠后）+ 左手（前握，靠前），抬高到枪身高度贴合握持
     mkArm(0.03, -0.02, 0.28, [0.35, -0.05, 0], 0.24);
     mkArm(-0.03, -0.02, -0.16, [-0.15, 0.12, 0], 0.28);
+  }
+
+  setViewWeapon(weaponId) {
+    const cfg = WEAPONS.byId[weaponId] || WEAPONS.byId[WEAPONS.defaultId];
+    this.activeViewWeapon = cfg.id;
+    if (this.muzzle) {
+      this.muzzle.position.set(0, 0.02, cfg.muzzleZ);
+      this.muzzleFlash.position.copy(this.muzzle.position);
+      this.flashLight.position.copy(this.muzzle.position);
+    }
+    if (!this.viewModel || !this.models[cfg.id]) return;
+    if (this.gunModel) {
+      this.viewModel.remove(this.gunModel);
+      this.gunModel = null;
+    }
+    const gun = this.models[cfg.id].clone(true);
+    gun.scale.setScalar(cfg.viewScale || 1);
+    gun.rotation.set(0, 0, 0);
+    gun.position.set(cfg.viewPos.x, cfg.viewPos.y, cfg.viewPos.z);
+    gun.traverse((o) => { if (o.isMesh) { o.castShadow = false; o.frustumCulled = false; } });
+    this.viewModel.add(gun);
+    this.gunModel = gun;
+  }
+
+  _makeRemoteWeapon(weaponId) {
+    const cfg = WEAPONS.byId[weaponId] || WEAPONS.byId[WEAPONS.defaultId];
+    if (!this.models[cfg.id]) return null;
+    const weapon = this.models[cfg.id].clone(true);
+    weapon.name = '__remote_weapon';
+    weapon.scale.setScalar(cfg.remoteScale || 1);
+    weapon.rotation.set(0, Math.PI, 0);
+    weapon.position.set(cfg.remotePos.x, cfg.remotePos.y, cfg.remotePos.z);
+    weapon.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+    return weapon;
+  }
+
+  setRemoteWeapon(slot, weaponId) {
+    const g = this.remotePlayers[slot];
+    if (!g || !g.userData || !g.userData.weaponMount) return;
+    if (g.userData.weaponId === weaponId) return;
+    if (g.userData.weaponNode) g.userData.weaponMount.remove(g.userData.weaponNode);
+    const weapon = this._makeRemoteWeapon(weaponId);
+    if (weapon) {
+      g.userData.weaponMount.add(weapon);
+      g.userData.weaponNode = weapon;
+      g.userData.weaponId = weaponId;
+    }
   }
 
   // 创建远程玩家模型（soldier.glb + 队伍配色 + 手持 rifle）
@@ -314,20 +355,21 @@ export class World {
       });
       inner.add(body);
 
-      // 手持步枪（第三人称）：对齐到双手位置，枪管朝前
-      if (this.models.rifle) {
-        const rifle = this.models.rifle.clone(true);
-        rifle.scale.setScalar(0.9);
-        // inner 有 rotation.y=PI：世界前方(-Z) 对应 inner 局部 +Z
-        // 枪管在素材里指向 -Z，旋转 180° 使其指向 inner 局部 +Z（即世界前方）
-        rifle.rotation.set(0, Math.PI, 0);
-        rifle.position.set(0, 1.04, 0.30); // 双手中点：高度 1.04，身前
-        rifle.traverse((o) => { if (o.isMesh) o.castShadow = true; });
-        inner.add(rifle);
-      }
       g.add(inner);
       // dummy 关节，兼容 game.js 的走路动画调用（GLB 为整体网格，不做腿部摆动）
-      g.userData = { head: new THREE.Object3D(), torso: new THREE.Object3D(), lLeg: new THREE.Object3D(), rLeg: new THREE.Object3D(), gun: new THREE.Object3D(), walkPhase: 0 };
+      g.userData = {
+        head: new THREE.Object3D(),
+        torso: new THREE.Object3D(),
+        lLeg: new THREE.Object3D(),
+        rLeg: new THREE.Object3D(),
+        gun: new THREE.Object3D(),
+        weaponMount: inner,
+        weaponNode: null,
+        weaponId: null,
+        walkPhase: 0,
+      };
+      this.remotePlayers[slot] = g;
+      this.setRemoteWeapon(slot, WEAPONS.defaultId);
     } else {
       // 回退：方块玩家
       this._buildBoxPlayer(g, color);
@@ -367,7 +409,14 @@ export class World {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio * this.pixelRatioScale, 2));
+  }
+
+  setQuality(scale) {
+    this.pixelRatioScale = Math.max(0.6, Math.min(1.4, Number(scale) || 1));
+    const ratio = Math.min(window.devicePixelRatio * this.pixelRatioScale, 2);
+    this.renderer.setPixelRatio(ratio);
+    this.renderer.setSize(window.innerWidth, window.innerHeight);
   }
 
   render() {

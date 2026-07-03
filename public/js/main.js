@@ -7,6 +7,9 @@ import { Effects } from './effects.js';
 import { Game } from './game.js';
 
 const $ = (id) => document.getElementById(id);
+const WEAPONS = window.ARENA_WEAPONS;
+const DEFAULT_WEAPON = WEAPONS.byId[WEAPONS.defaultId];
+const SETTINGS_KEY = 'arena-fps-settings-v2';
 
 // ---------------- 实例 ----------------
 const canvas = $('game-canvas');
@@ -15,10 +18,53 @@ const net = new Net();
 const input = new Input();
 const audio = new AudioFX();
 const effects = new Effects(world.scene);
+let lastPlayers = [];
+
+const defaultSettings = {
+  sensitivity: 100,
+  volume: 65,
+  controls: 100,
+  quality: 1,
+};
+let settings = loadSettings();
+
+function loadSettings() {
+  try {
+    return { ...defaultSettings, ...(JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}) };
+  } catch (e) {
+    return { ...defaultSettings };
+  }
+}
+
+function saveSettings() {
+  localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+}
+
+function applySettings() {
+  input.setSensitivityScale(settings.sensitivity / 100);
+  audio.setVolume(settings.volume / 100);
+  world.setQuality(settings.quality);
+  document.documentElement.style.setProperty('--control-scale', settings.controls / 100);
+  syncSettingsUI();
+}
+
+function syncSettingsUI() {
+  $('set-sensitivity').value = settings.sensitivity;
+  $('set-sensitivity-val').textContent = settings.sensitivity + '%';
+  $('set-volume').value = settings.volume;
+  $('set-volume-val').textContent = settings.volume + '%';
+  $('set-controls').value = settings.controls;
+  $('set-controls-val').textContent = settings.controls + '%';
+  document.querySelectorAll('#set-quality button').forEach((b) => {
+    b.classList.toggle('active', Number(b.dataset.quality) === Number(settings.quality));
+  });
+}
 
 // ---------------- UI 适配层 ----------------
-const MAGSIZE = 30;
 const ui = {
+  updateSnapshot(s) {
+    lastPlayers = s.players || lastPlayers;
+  },
   setHP(side, hp) {
     const el = side === 'me' ? $('hud-hp-me') : $('hud-hp-op');
     el.style.width = Math.max(0, Math.min(100, hp)) + '%';
@@ -40,6 +86,19 @@ const ui = {
   setAmmo(ammo, mag, reloading) {
     $('ammo-count').textContent = reloading ? '换弹…' : `${ammo}/${mag}`;
     $('btn-reload').classList.toggle('reloading', !!reloading);
+  },
+  setWeapon(weaponId, ammoByWeapon, reloading) {
+    const weapon = WEAPONS.byId[weaponId] || DEFAULT_WEAPON;
+    $('weapon-name').textContent = weapon.label;
+    $('weapon-role').textContent = weapon.role.replace('能量', '');
+    document.querySelectorAll('.weapon-slot').forEach((slot) => {
+      slot.classList.toggle('active', slot.dataset.weapon === weapon.id);
+    });
+    WEAPONS.list.forEach((w) => {
+      const el = $(`${w.id}-ammo`);
+      if (el) el.textContent = ammoByWeapon && typeof ammoByWeapon[w.id] === 'number' ? ammoByWeapon[w.id] : w.mag;
+    });
+    $('btn-weapon').classList.toggle('switching', !!reloading);
   },
   showKill(text, dead) {
     const feed = $('killfeed');
@@ -75,6 +134,7 @@ const ui = {
 };
 
 const game = new Game({ world, net, input, audio, effects, ui });
+applySettings();
 
 // ---------------- 界面切换 ----------------
 const screens = ['screen-home', 'screen-lobby', 'screen-hud', 'screen-result'];
@@ -94,7 +154,8 @@ function enterMatch() {
   game.enter(net.slot);
   game.start();
   show('screen-hud');
-  ui.setAmmo(MAGSIZE, MAGSIZE, false);
+  ui.setWeapon(WEAPONS.defaultId, Object.fromEntries(WEAPONS.list.map((w) => [w.id, w.mag])), false);
+  ui.setAmmo(DEFAULT_WEAPON.mag, DEFAULT_WEAPON.mag, false);
 }
 
 function requestFullscreen() {
@@ -139,8 +200,59 @@ $('btn-join').addEventListener('click', async () => {
   }
 });
 
-$('btn-help').addEventListener('click', () => $('help-modal').classList.add('show'));
-$('btn-help-close').addEventListener('click', () => $('help-modal').classList.remove('show'));
+$('btn-help').addEventListener('click', () => openModal('help-modal'));
+$('btn-help-close').addEventListener('click', () => closeModal('help-modal'));
+
+function openModal(id) {
+  $(id).classList.add('show');
+  document.body.classList.add('menu-open');
+  if (document.pointerLockElement) document.exitPointerLock();
+}
+
+function closeModal(id) {
+  $(id).classList.remove('show');
+  if (!$('help-modal').classList.contains('show') && !$('settings-modal').classList.contains('show')) {
+    document.body.classList.remove('menu-open');
+  }
+}
+
+function openSettings() {
+  syncSettingsUI();
+  openModal('settings-modal');
+}
+
+$('btn-settings-home').addEventListener('click', openSettings);
+$('btn-settings-hud').addEventListener('click', openSettings);
+$('btn-settings-close').addEventListener('click', () => closeModal('settings-modal'));
+$('settings-modal').addEventListener('click', (e) => {
+  if (e.target === $('settings-modal')) closeModal('settings-modal');
+});
+$('help-modal').addEventListener('click', (e) => {
+  if (e.target === $('help-modal')) closeModal('help-modal');
+});
+
+$('set-sensitivity').addEventListener('input', (e) => {
+  settings.sensitivity = Number(e.target.value);
+  applySettings(); saveSettings();
+});
+$('set-volume').addEventListener('input', (e) => {
+  settings.volume = Number(e.target.value);
+  applySettings(); saveSettings();
+});
+$('set-controls').addEventListener('input', (e) => {
+  settings.controls = Number(e.target.value);
+  applySettings(); saveSettings();
+});
+document.querySelectorAll('#set-quality button').forEach((b) => {
+  b.addEventListener('click', () => {
+    settings.quality = Number(b.dataset.quality);
+    applySettings(); saveSettings();
+  });
+});
+$('btn-settings-reset').addEventListener('click', () => {
+  settings = { ...defaultSettings };
+  applySettings(); saveSettings();
+});
 
 // ---------------- 单人训练 ----------------
 let soloDifficulty = 'normal';
@@ -206,24 +318,28 @@ function showLoading(on) { $('loading').classList.toggle('show', on); }
 
 // ---------------- 网络事件 ----------------
 net.on('roomState', (st) => {
+  if (st.players) lastPlayers = st.players;
   // 房间阶段驱动界面
   if (st.phase === 'waiting') {
     if (!matchStarted) show('screen-lobby');
   } else if (st.phase === 'countdown' || st.phase === 'playing' || st.phase === 'overtime') {
     enterMatch();
   } else if (st.phase === 'ended') {
-    if (st.result) showResult(st.result);
+    if (st.result) showResult(st.result, st.players || st.result.players);
   }
 });
 
 net.on('matchStart', () => { ui.toast('对战开始！'); });
 net.on('overtime', () => { ui.toast('比分相同，进入加时赛！'); });
 
-net.on('gameOver', (data) => { showResult(data.result); });
+net.on('gameOver', (data) => {
+  if (data.players) lastPlayers = data.players;
+  showResult(data.result, data.players);
+});
 
 net.on('opponentLeft', () => {
   ui.toast('对手已离开房间');
-  showResult({ reason: 'opponentLeft' });
+  showResult({ reason: 'opponentLeft' }, lastPlayers);
 });
 net.on('opponentDisconnected', () => ui.toast('对手连接中断，等待重连…'));
 net.on('opponentReconnected', () => ui.toast('对手已重连'));
@@ -232,9 +348,10 @@ net.on('connected', () => {});
 net.on('rejoined', () => ui.toast('已重新连接'));
 net.on('rejoinFailed', () => { ui.toast('无法重连，返回大厅'); resetToHome(); });
 
-function showResult(result) {
+function showResult(result, players) {
   game.stop();
   matchStarted = false;
+  const roster = players || result.players || lastPlayers || [];
   const slot = net.slot;
   const title = $('result-title');
   const sub = $('result-reason');
@@ -267,7 +384,28 @@ function showResult(result) {
   } else {
     $('result-score').textContent = $('hud-score').textContent;
   }
+  updateResultStats(roster, slot);
   show('screen-result');
+}
+
+function safeStats(player) {
+  return (player && player.stats) || {
+    shots: 0, hits: 0, kills: 0, deaths: 0, damageDealt: 0, damageTaken: 0, reloads: 0,
+  };
+}
+
+function updateResultStats(players, slot) {
+  const me = players.find((p) => p.slot === slot);
+  const op = players.find((p) => p.slot !== slot);
+  const ms = safeStats(me);
+  const os = safeStats(op);
+  const accuracy = ms.shots ? Math.round(ms.hits / ms.shots * 100) : 0;
+  $('stat-accuracy').textContent = accuracy + '%';
+  $('stat-kills').textContent = ms.kills || 0;
+  $('stat-damage').textContent = ms.damageDealt || 0;
+  $('stat-reloads').textContent = ms.reloads || 0;
+  $('stat-me-line').textContent = `${ms.kills || 0} 击败 / ${ms.damageDealt || 0} 伤害 / ${ms.deaths || 0} 阵亡`;
+  $('stat-op-line').textContent = `${os.kills || 0} 击败 / ${os.damageDealt || 0} 伤害 / ${os.deaths || 0} 阵亡`;
 }
 
 // ---------------- 系统 ----------------

@@ -4,6 +4,7 @@ export class AudioFX {
     this.ctx = null;
     this.master = null;
     this.enabled = true;
+    this.volume = 0.65;
   }
 
   // 首次用户交互时调用以解锁音频
@@ -13,8 +14,13 @@ export class AudioFX {
     if (!AC) { this.enabled = false; return; }
     this.ctx = new AC();
     this.master = this.ctx.createGain();
-    this.master.gain.value = 0.5;
+    this.master.gain.value = this.volume;
     this.master.connect(this.ctx.destination);
+  }
+
+  setVolume(value) {
+    this.volume = Math.max(0, Math.min(1, Number(value) || 0));
+    if (this.master) this.master.gain.value = this.volume;
   }
 
   _noiseBuffer(dur) {

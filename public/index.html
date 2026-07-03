@@ -18,33 +18,50 @@
   <!-- ============ 首页 ============ -->
   <section id="screen-home" class="screen active">
     <div class="home-bg"></div>
-    <div class="home-inner">
-      <h1 class="title">极速枪战<span>ARENA</span></h1>
-      <p class="subtitle">在线 1v1 · 第一人称 3D 枪战对决</p>
-
-      <input id="name-input" class="text-input" maxlength="12" placeholder="输入你的代号（可选）" />
-
-      <div class="solo-box">
-        <span class="solo-label">单人训练 · 难度</span>
-        <div class="diff-row">
-          <button class="btn diff-btn" data-diff="easy">简单</button>
-          <button class="btn diff-btn active" data-diff="normal">普通</button>
-          <button class="btn diff-btn" data-diff="hard">困难</button>
+    <div class="home-inner home-shell">
+      <div class="brand-stack">
+        <div class="brand-kicker">LOW-POLY MOBILE FPS</div>
+        <h1 class="title">极速枪战<span>ARENA</span></h1>
+        <p class="subtitle">30 秒进场 · 3 分钟决胜 · 服务端裁决</p>
+        <div class="home-metrics">
+          <div><b>1v1</b><span>实时房间</span></div>
+          <div><b>AI</b><span>单人训练</span></div>
+          <div><b>2</b><span>武器槽</span></div>
         </div>
-        <button id="btn-solo" class="btn btn-primary">开始单人对战 AI</button>
       </div>
 
-      <div class="divider"><span>或联机对战</span></div>
+      <div class="home-panel">
+        <div class="panel-head">
+          <span>进入竞技场</span>
+          <button id="btn-settings-home" class="icon-btn" type="button" aria-label="打开设置">设置</button>
+        </div>
 
-      <button id="btn-create" class="btn btn-secondary">创建房间</button>
+        <input id="name-input" class="text-input" maxlength="12" placeholder="输入你的代号（可选）" />
 
-      <div class="join-row">
-        <input id="room-input" class="text-input" inputmode="numeric" maxlength="4" placeholder="房间号" />
-        <button id="btn-join" class="btn btn-secondary">加入</button>
+        <div class="solo-box">
+          <span class="solo-label">单人训练 · 难度</span>
+          <div class="diff-row">
+            <button class="btn diff-btn" data-diff="easy">简单</button>
+            <button class="btn diff-btn active" data-diff="normal">普通</button>
+            <button class="btn diff-btn" data-diff="hard">困难</button>
+          </div>
+          <button id="btn-solo" class="btn btn-primary">开始单人对战 AI</button>
+        </div>
+
+        <div class="divider"><span>或联机对战</span></div>
+
+        <button id="btn-create" class="btn btn-secondary">创建房间</button>
+
+        <div class="join-row">
+          <input id="room-input" class="text-input" inputmode="numeric" maxlength="4" placeholder="房间号" />
+          <button id="btn-join" class="btn btn-secondary">加入</button>
+        </div>
+
+        <div class="home-actions-row">
+          <button id="btn-help" class="btn btn-ghost">操作说明</button>
+        </div>
+        <p class="hint">建议横屏游玩，体验更佳</p>
       </div>
-
-      <button id="btn-help" class="btn btn-ghost">操作说明</button>
-      <p class="hint">建议横屏游玩，体验更佳</p>
     </div>
   </section>
 
@@ -66,6 +83,8 @@
 
   <!-- ============ 游戏 HUD ============ -->
   <section id="screen-hud" class="screen hud">
+    <button id="btn-settings-hud" class="hud-settings icon-btn" type="button" aria-label="打开设置">设置</button>
+
     <!-- 顶部比分 / 计时 / 血量 -->
     <div class="topbar">
       <div class="score-card me">
@@ -108,8 +127,18 @@
     <!-- 右侧按钮 -->
     <div class="action-buttons">
       <button id="btn-jump" class="abtn jump">跳</button>
+      <button id="btn-weapon" class="abtn weapon"><span id="weapon-name">AR-30</span><small id="weapon-role">步枪</small></button>
       <button id="btn-reload" class="abtn reload"><span id="ammo-count">30/30</span><small>换弹</small></button>
       <button id="btn-fire" class="abtn fire">射击</button>
+    </div>
+
+    <div class="weapon-strip">
+      <button class="weapon-slot active" data-weapon="rifle" type="button">
+        <b>1</b><span>AR-30</span><small id="rifle-ammo">30</small>
+      </button>
+      <button class="weapon-slot" data-weapon="pistol" type="button">
+        <b>2</b><span>PX-7</span><small id="pistol-ammo">12</small>
+      </button>
     </div>
 
     <!-- 顶部状态提示（如对手断线） -->
@@ -119,10 +148,20 @@
   <!-- ============ 结算 ============ -->
   <section id="screen-result" class="screen">
     <div class="home-bg"></div>
-    <div class="home-inner">
+    <div class="home-inner result-panel">
       <h2 id="result-title" class="result-title">胜利</h2>
       <div id="result-score" class="result-score">0 : 0</div>
       <p id="result-reason" class="hint"></p>
+      <div id="result-stats" class="result-stats">
+        <div class="stat-card"><span>命中率</span><b id="stat-accuracy">0%</b></div>
+        <div class="stat-card"><span>击败</span><b id="stat-kills">0</b></div>
+        <div class="stat-card"><span>伤害</span><b id="stat-damage">0</b></div>
+        <div class="stat-card"><span>换弹</span><b id="stat-reloads">0</b></div>
+      </div>
+      <div class="result-compare">
+        <div><span>我方</span><b id="stat-me-line">0 击败 / 0 伤害</b></div>
+        <div><span>对手</span><b id="stat-op-line">0 击败 / 0 伤害</b></div>
+      </div>
       <button id="btn-rematch" class="btn btn-primary">再来一局</button>
       <button id="btn-lobby" class="btn btn-ghost">返回大厅</button>
     </div>
@@ -135,13 +174,49 @@
       <ul>
         <li><b>左下摇杆</b>：前后左右移动</li>
         <li><b>右侧滑动</b>：转动视角 / 瞄准</li>
-        <li><b>射击</b>按钮：开火（弹匣 30 发）</li>
-        <li><b>换弹</b>按钮：装填（1.5 秒，期间无法射击）</li>
+        <li><b>射击</b>按钮：使用当前武器开火</li>
+        <li><b>武器</b>按钮：切换 AR-30 / PX-7</li>
+        <li><b>换弹</b>按钮：装填当前武器</li>
         <li><b>跳</b>按钮：跳跃越过掩体</li>
+        <li><b>键盘</b>：WASD 移动，1/2 切枪，R 换弹，空格跳跃</li>
         <li>击败对手 +1 分，被击败后 3 秒复活</li>
         <li>单局 3 分钟，比分高者获胜；平局进入 30 秒加时</li>
       </ul>
       <button id="btn-help-close" class="btn btn-secondary">知道了</button>
+    </div>
+  </div>
+
+  <!-- ============ 设置 ============ -->
+  <div id="settings-modal" class="modal">
+    <div class="modal-box settings-box">
+      <div class="modal-head">
+        <h3>设置</h3>
+        <button id="btn-settings-close" class="icon-btn" type="button" aria-label="关闭设置">关闭</button>
+      </div>
+      <div class="setting-row">
+        <label for="set-sensitivity">瞄准灵敏度</label>
+        <input id="set-sensitivity" type="range" min="60" max="150" value="100" />
+        <span id="set-sensitivity-val">100%</span>
+      </div>
+      <div class="setting-row">
+        <label for="set-volume">音量</label>
+        <input id="set-volume" type="range" min="0" max="100" value="65" />
+        <span id="set-volume-val">65%</span>
+      </div>
+      <div class="setting-row">
+        <label for="set-controls">按钮尺寸</label>
+        <input id="set-controls" type="range" min="85" max="120" value="100" />
+        <span id="set-controls-val">100%</span>
+      </div>
+      <div class="setting-row segmented-row">
+        <span>画质</span>
+        <div class="segmented" id="set-quality">
+          <button data-quality="0.75" type="button">流畅</button>
+          <button data-quality="1" class="active" type="button">标准</button>
+          <button data-quality="1.25" type="button">清晰</button>
+        </div>
+      </div>
+      <button id="btn-settings-reset" class="btn btn-ghost" type="button">恢复默认</button>
     </div>
   </div>
 
@@ -158,6 +233,8 @@
   <script src="/socket.io/socket.io.js"></script>
   <!-- 共享地图（暴露 window.ARENA_MAP） -->
   <script src="shared/map.js"></script>
+  <!-- 共享武器参数（暴露 window.ARENA_WEAPONS） -->
+  <script src="shared/weapons.js"></script>
 
   <!-- Three.js 模块 -->
   <script type="importmap">
