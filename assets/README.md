@@ -13,6 +13,7 @@ assets/
     ├── soldier.glb       # 士兵角色（约 1.75m 高，第三人称对手）
     ├── rifle.glb         # 突击步枪（第一人称 + 第三人称手持）
     ├── pistol.glb        # 手枪（备用武器）
+    ├── sniper.glb        # 狙击枪（开镜高精度武器）
     ├── wall.glb          # 实心墙体模块（1×3×0.2m）
     ├── wall_window.glb   # 带窗户的墙
     ├── wall_door.glb     # 带门洞的墙

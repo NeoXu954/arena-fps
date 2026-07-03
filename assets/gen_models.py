@@ -683,6 +683,36 @@ def gen_rifle() -> None:
     export("rifle", g)
 
 
+def gen_sniper() -> None:
+    g, m = make_asset("sniper")
+    add_box(g, "sniper_receiver_core", (0, 0.020, -0.140), (0.125, 0.135, 0.410), m["gunmetal"])
+    add_box(g, "sniper_receiver_lower", (0, -0.055, -0.115), (0.105, 0.055, 0.355), m["frame2"])
+    add_box(g, "sniper_top_rail", (0, 0.116, -0.145), (0.100, 0.030, 0.470), m["gunmetal2"])
+    add_box(g, "sniper_scope_body", (0, 0.195, -0.145), (0.105, 0.080, 0.345), m["rubber"])
+    add_cylinder_axis(g, "sniper_scope_front_lens", (0, 0.195, -0.340), 0.065, 0.045, "z", 12, m["cyan_dim"])
+    add_cylinder_axis(g, "sniper_scope_rear_lens", (0, 0.195, 0.040), 0.055, 0.035, "z", 12, m["glass"])
+    add_box(g, "sniper_scope_mount_front", (0, 0.140, -0.265), (0.070, 0.060, 0.040), m["frame2"])
+    add_box(g, "sniper_scope_mount_back", (0, 0.140, -0.020), (0.070, 0.060, 0.040), m["frame2"])
+    add_box(g, "sniper_long_handguard", (0, 0.020, -0.455), (0.145, 0.125, 0.330), m["frame2"])
+    add_box(g, "sniper_olive_side_left", (-0.079, 0.020, -0.450), (0.018, 0.080, 0.265), m["olive"])
+    add_box(g, "sniper_olive_side_right", (0.079, 0.020, -0.450), (0.018, 0.080, 0.265), m["olive"])
+    add_cylinder_axis(g, "sniper_heavy_barrel", (0, 0.035, -0.760), 0.025, 0.480, "z", 12, m["gunmetal2"])
+    add_cylinder_axis(g, "sniper_muzzle_brake", (0, 0.035, -1.025), 0.042, 0.085, "z", 10, m["frame2"])
+    add_box(g, "sniper_muzzle_port_l", (-0.050, 0.040, -1.028), (0.030, 0.035, 0.040), m["orange"])
+    add_box(g, "sniper_muzzle_port_r", (0.050, 0.040, -1.028), (0.030, 0.035, 0.040), m["orange"])
+    add_box(g, "sniper_magazine", (0, -0.145, -0.065), (0.095, 0.185, 0.115), m["olive_dark"])
+    add_box(g, "sniper_pistol_grip", (0, -0.150, 0.130), (0.078, 0.210, 0.080), m["rubber"])
+    add_box(g, "sniper_trigger_guard_front", (0, -0.085, 0.005), (0.070, 0.030, 0.040), m["frame2"])
+    add_box(g, "sniper_trigger_guard_bottom", (0, -0.135, 0.055), (0.070, 0.030, 0.105), m["frame2"])
+    add_box(g, "sniper_stock_beam", (0, 0.025, 0.270), (0.090, 0.095, 0.280), m["gunmetal2"])
+    add_box(g, "sniper_stock_pad", (0, 0.030, 0.455), (0.155, 0.145, 0.070), m["olive"])
+    add_box(g, "sniper_cheek_rest", (0, 0.112, 0.300), (0.110, 0.050, 0.170), m["rubber"])
+    add_box(g, "sniper_cyan_charge_left", (-0.073, 0.032, -0.200), (0.012, 0.045, 0.120), m["cyan"])
+    add_box(g, "sniper_cyan_charge_right", (0.073, 0.032, -0.200), (0.012, 0.045, 0.120), m["cyan"])
+    add_box(g, "sniper_orange_bolt", (0.075, 0.055, 0.035), (0.060, 0.026, 0.100), m["orange"])
+    export("sniper", g)
+
+
 def gen_soldier() -> None:
     g, m = make_asset("soldier")
     g.position_scale = (0.92, 0.92, 0.92)
@@ -740,6 +770,7 @@ GENERATORS = [
     ("soldier", gen_soldier),
     ("rifle", gen_rifle),
     ("pistol", gen_pistol),
+    ("sniper", gen_sniper),
     ("wall", gen_wall),
     ("wall_window", gen_wall_window),
     ("wall_door", gen_wall_door),

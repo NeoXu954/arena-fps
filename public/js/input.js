@@ -8,6 +8,7 @@ export class Input {
     this._jumpQueued = false;
     this._reloadQueued = false;
     this._weaponQueued = null;
+    this._scopeQueued = false;
     this.lookSensitivity = 0.0042; // 弧度/像素
 
     this._joyId = null;
@@ -24,6 +25,7 @@ export class Input {
   consumeJump() { const j = this._jumpQueued; this._jumpQueued = false; return j; }
   consumeReload() { const r = this._reloadQueued; this._reloadQueued = false; return r; }
   consumeWeaponSwitch() { const w = this._weaponQueued; this._weaponQueued = null; return w; }
+  consumeScopeToggle() { const s = this._scopeQueued; this._scopeQueued = false; return s; }
   setSensitivityScale(scale) { this.lookSensitivity = 0.0042 * Math.max(0.4, Math.min(1.8, scale)); }
   isGameplayBlocked() { return document.body.classList.contains('menu-open'); }
   consumeLook() {
@@ -122,9 +124,13 @@ export class Input {
     });
     document.addEventListener('mousedown', (e) => {
       if (document.pointerLockElement === canvas && e.button === 0 && !this.isGameplayBlocked()) this.firing = true;
+      if (document.pointerLockElement === canvas && e.button === 2 && !this.isGameplayBlocked()) this._scopeQueued = true;
     });
     document.addEventListener('mouseup', (e) => {
       if (e.button === 0) this.firing = false;
+    });
+    document.addEventListener('contextmenu', (e) => {
+      if (document.pointerLockElement === canvas) e.preventDefault();
     });
   }
 
@@ -146,6 +152,8 @@ export class Input {
       () => { if (!this.isGameplayBlocked()) this._reloadQueued = true; });
     this._bindButton(document.getElementById('btn-jump'),
       () => { if (!this.isGameplayBlocked()) this._jumpQueued = true; });
+    this._bindButton(document.getElementById('btn-scope'),
+      () => { if (!this.isGameplayBlocked()) this._scopeQueued = true; });
     this._bindButton(document.getElementById('btn-weapon'),
       () => { if (!this.isGameplayBlocked()) this._weaponQueued = 'toggle'; });
     document.querySelectorAll('.weapon-slot').forEach((el) => {
@@ -161,11 +169,14 @@ export class Input {
       const tag = (e.target && e.target.tagName || '').toLowerCase();
       if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
       if (this.isGameplayBlocked()) return;
+      const wasDown = !!keys[e.code];
       keys[e.code] = true;
       if (e.code === 'KeyR') this._reloadQueued = true;
       if (e.code === 'Space') this._jumpQueued = true;
       if (e.code === 'Digit1') this._weaponQueued = 'rifle';
       if (e.code === 'Digit2') this._weaponQueued = 'pistol';
+      if (e.code === 'Digit3') this._weaponQueued = 'sniper';
+      if (e.code === 'KeyE' && !wasDown) this._scopeQueued = true;
       if (e.code === 'KeyQ') this._weaponQueued = 'toggle';
       this._applyKeys();
     });

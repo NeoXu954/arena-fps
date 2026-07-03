@@ -40,6 +40,7 @@ export class Game {
     this.invulnUntil = 0;
     this.armor = 0;
     this.effects = { speed: 0 };
+    this.scoped = false;
 
     this.weaponId = WEAPONS.defaultId;
     this.ammoByWeapon = freshAmmo();
@@ -68,6 +69,7 @@ export class Game {
     this.alive = true;
     this.armor = 0;
     this.effects = { speed: 0 };
+    this.scoped = false;
     this.weaponId = WEAPONS.defaultId;
     this.ammoByWeapon = freshAmmo();
     this.ammo = this.ammoByWeapon[this.weaponId];
@@ -76,6 +78,7 @@ export class Game {
     this.world.setViewWeapon(this.weaponId);
     this.ui.setWeapon(this.weaponId, this.ammoByWeapon, false);
     this.ui.setAmmo(this.ammo, this._weapon().mag, false);
+    this._refreshScopeUi();
     this._syncCamera();
   }
 
@@ -87,7 +90,10 @@ export class Game {
     requestAnimationFrame(this._loop);
   }
 
-  stop() { this.running = false; }
+  stop() {
+    this.running = false;
+    this._setScoped(false);
+  }
 
   // ---------------------------------------------------------------- 网络
   _wireNet() {
@@ -137,6 +143,7 @@ export class Game {
       // 死亡 / 复活倒计时
       if (!me.alive) {
         this.alive = false;
+        this._setScoped(false);
         this.ui.showDeath(Math.ceil(me.respawnIn / 1000));
       }
     }
@@ -166,7 +173,7 @@ export class Game {
     const dir = new THREE.Vector3(d.dir.x, d.dir.y, d.dir.z);
     if (d.weapon && this.opp) this.world.setRemoteWeapon(d.slot, d.weapon);
     this.fx.muzzleFlash(origin.clone().add(dir.clone().multiplyScalar(0.4)));
-    this.fx.tracer(origin, dir, 60);
+    this.fx.tracer(origin, dir, d.weapon === 'sniper' ? 95 : 60);
     this.audio.shoot();
   }
 
@@ -191,6 +198,7 @@ export class Game {
       this.audio.kill();
     } else if (d.victim === this.slot) {
       this.alive = false;
+      this._setScoped(false);
       this.audio.death();
     }
     if (d.scores) {
@@ -202,6 +210,7 @@ export class Game {
     if (d.slot === this.slot) {
       this.pos.set(d.pos.x, d.pos.y - EYE, d.pos.z);
       this.vy = 0; this.yaw = d.yaw; this.pitch = 0; this.alive = true;
+      this._setScoped(false);
       this.invulnUntil = d.invulnUntil;
       this._applyPlayerPacket(d);
       this.reloading = false;
@@ -214,6 +223,7 @@ export class Game {
 
   _onReloadStart(d) {
     this._applyAmmoPacket(d);
+    if (this.scoped) this._setScoped(false);
     this.reloading = true;
     this.ui.setAmmo(this.ammo, this._weapon().mag, true);
     this.audio.reload();
@@ -231,6 +241,7 @@ export class Game {
     this.ammo = this.ammoByWeapon[this.weaponId] ?? this._weapon().mag;
     this.ui.setWeapon(this.weaponId, this.ammoByWeapon, this.reloading);
     if (prevWeapon !== this.weaponId) this.world.setViewWeapon(this.weaponId);
+    this._refreshScopeUi();
   }
 
   _applyPlayerPacket(p) {
@@ -251,6 +262,36 @@ export class Game {
     this.reloading = false;
     this._applyAmmoPacket(d);
     this.ui.setAmmo(this.ammo, this._weapon().mag, false);
+  }
+
+  _refreshScopeUi() {
+    const available = this.weaponId === 'sniper' && this.alive;
+    if (!available && this.scoped) this.scoped = false;
+    if (this.ui.setScope) this.ui.setScope(this.scoped, available);
+    if (!this.scoped && this.world.camera && Math.abs(this.world.camera.fov - 75) > 0.01) {
+      this.world.camera.fov = 75;
+      this.world.camera.updateProjectionMatrix();
+    }
+  }
+
+  _setScoped(on) {
+    const available = this.weaponId === 'sniper' && this.alive;
+    this.scoped = !!(on && available);
+    if (this.ui.setScope) this.ui.setScope(this.scoped, available);
+    if (!this.scoped && this.world.camera) {
+      this.world.camera.fov = 75;
+      this.world.camera.updateProjectionMatrix();
+    }
+  }
+
+  _updateScopeCamera(dt) {
+    const cam = this.world.camera;
+    if (!cam) return;
+    const weapon = this._weapon();
+    const targetFov = this.scoped ? (weapon.scopedFov || 34) : 75;
+    if (Math.abs(cam.fov - targetFov) < 0.02) return;
+    cam.fov += (targetFov - cam.fov) * Math.min(1, dt * 12);
+    cam.updateProjectionMatrix();
   }
 
   _onPickup(d) {
@@ -291,6 +332,7 @@ export class Game {
       this.input.consumeReload();
       this.input.consumeJump();
       this.input.consumeWeaponSwitch();
+      if (this.input.consumeScopeToggle) this.input.consumeScopeToggle();
     }
 
     // 先同步相机（位置 + 朝向），保证射击方向使用当前帧的瞄准
@@ -299,10 +341,14 @@ export class Game {
     if (this.alive && playing && !blocked) {
       const weaponReq = this.input.consumeWeaponSwitch();
       if (weaponReq) this._switchWeapon(weaponReq);
+      if (this.input.consumeScopeToggle && this.input.consumeScopeToggle()) {
+        this._setScoped(!this.scoped);
+      }
       this._handleShooting(dt);
       if (this.input.consumeReload()) this._startReload();
     }
 
+    this._updateScopeCamera(dt);
     this._animateViewModel(dt);
     this._updateRemote(dt);
     this.fx.update(dt);
@@ -326,7 +372,9 @@ export class Game {
     // 前进向量（yaw=0 朝 -Z）
     const fx = -sin, fz = -cos;
     const rx = cos, rz = -sin;
-    const speedScale = this.effects && this.effects.speed > 0 ? 1.22 : 1;
+    const weapon = this._weapon();
+    const speedScale = (this.effects && this.effects.speed > 0 ? 1.22 : 1) *
+      (this.scoped ? (weapon.adsMoveScale || 0.75) : 1);
     let vx = (fx * mv.y + rx * mv.x) * SPEED * speedScale;
     let vz = (fz * mv.y + rz * mv.x) * SPEED * speedScale;
 
@@ -417,9 +465,12 @@ export class Game {
     // 朝向 + 散布
     this.world.camera.getWorldDirection(this._tmpDir);
     const dir = this._tmpDir.clone();
-    dir.x += (Math.random() - 0.5) * weapon.spread;
-    dir.y += (Math.random() - 0.5) * weapon.spread;
-    dir.z += (Math.random() - 0.5) * weapon.spread;
+    const spread = this.scoped && weapon.scopeSpread !== undefined
+      ? weapon.scopeSpread
+      : (weapon.hipSpread !== undefined ? weapon.hipSpread : weapon.spread);
+    dir.x += (Math.random() - 0.5) * spread;
+    dir.y += (Math.random() - 0.5) * spread;
+    dir.z += (Math.random() - 0.5) * spread;
     dir.normalize();
 
     // 发送服务端裁决
@@ -432,7 +483,7 @@ export class Game {
   _fireFeedback(dir) {
     const weapon = this._weapon();
     this.audio.shoot();
-    this.recoil = Math.min(0.11, this.recoil + weapon.recoil);
+    this.recoil = Math.min(0.16, this.recoil + weapon.recoil);
     // 枪口世界坐标
     const muzzleWorld = new THREE.Vector3();
     this.world.muzzle.getWorldPosition(muzzleWorld);
@@ -441,7 +492,7 @@ export class Game {
     this.world.flashLight.intensity = 2.4;
     this._flashUntil = performance.now() + 50;
     // 弹道
-    this.fx.tracer(muzzleWorld, dir, 60);
+    this.fx.tracer(muzzleWorld, dir, weapon.id === 'sniper' ? 95 : 60);
     // 命中点尘土（仅墙面，避免与服务端血雾重叠）
     const origin = this.world.camera.position;
     const wallT = this._rayWall(origin, dir);
@@ -500,6 +551,7 @@ export class Game {
   _startReload() {
     const weapon = this._weapon();
     if (this.reloading || this.ammo >= weapon.mag || !this.alive) return;
+    if (this.scoped) this._setScoped(false);
     this.net.reload();
     this.reloading = true;
     this.ui.setAmmo(this.ammo, weapon.mag, true);
@@ -514,12 +566,14 @@ export class Game {
       next = ids[(idx + 1) % ids.length];
     }
     if (!WEAPONS.byId[next] || next === this.weaponId) return;
+    if (this.scoped) this._setScoped(false);
     this.weaponId = next;
     this.reloading = false;
     this.ammo = this.ammoByWeapon[this.weaponId] ?? this._weapon().mag;
     this.world.setViewWeapon(this.weaponId);
     this.ui.setWeapon(this.weaponId, this.ammoByWeapon, false);
     this.ui.setAmmo(this.ammo, this._weapon().mag, false);
+    this._refreshScopeUi();
     this.net.switchWeapon(this.weaponId);
   }
 
@@ -542,6 +596,11 @@ export class Game {
     const bobX = Math.cos(this._bob) * 0.006 * (moving ? 1 : 0);
     const bobY = Math.abs(Math.sin(this._bob)) * 0.008 * (moving ? 1 : 0);
     vm.position.set(base.x + bobX, base.y - bobY, base.z + (this._vmKick || 0));
+    if (this.scoped) {
+      vm.position.x = base.x * 0.35 + bobX * 0.2;
+      vm.position.y = base.y - 0.22;
+      vm.position.z = base.z + 0.02 + (this._vmKick || 0);
+    }
     // 换弹动画：枪下沉
     if (this.reloading) {
       vm.position.y -= 0.12;

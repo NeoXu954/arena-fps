@@ -54,12 +54,16 @@ function assert(c, m) { if (!c) { console.error('❌ FAIL:', m); process.exitCod
   b.emit('move', { pos: { x: 10, y: 1.5, z: -2 }, yaw: Math.PI, pitch: 0, moving: false });
   await sleep(150);
 
-  // 武器切换：A 切到手枪再切回步枪，验证服务端同步弹匣和武器状态
+  // 武器切换：A 切到手枪/狙击枪再切回步枪，验证服务端同步弹匣和武器状态
   a.events.length = 0; b.events.length = 0;
   a.emit('switchWeapon', { weapon: 'pistol' });
   await sleep(120);
   assert(a.events.some((x) => x.e === 'weaponChanged' && x.d.weapon === 'pistol' && x.d.ammo === 12), 'A 切换到手枪并收到 12 发弹匣');
   assert(b.events.some((x) => x.e === 'oppWeapon' && x.d.weapon === 'pistol'), 'B 收到 A 的手枪切换同步');
+  a.emit('switchWeapon', { weapon: 'sniper' });
+  await sleep(120);
+  assert(a.events.some((x) => x.e === 'weaponChanged' && x.d.weapon === 'sniper' && x.d.ammo === 5), 'A 切换到狙击枪并收到 5 发弹匣');
+  assert(b.events.some((x) => x.e === 'oppWeapon' && x.d.weapon === 'sniper'), 'B 收到 A 的狙击枪切换同步');
   a.emit('switchWeapon', { weapon: 'rifle' });
   await sleep(120);
   assert(a.events.some((x) => x.e === 'weaponChanged' && x.d.weapon === 'rifle' && x.d.ammo === 30), 'A 切回步枪并收到 30 发弹匣');

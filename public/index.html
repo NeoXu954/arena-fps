@@ -26,7 +26,7 @@
         <div class="home-metrics">
           <div><b>1v1</b><span>实时房间</span></div>
           <div><b>AI</b><span>单人训练</span></div>
-          <div><b>2</b><span>武器槽</span></div>
+          <div><b>3</b><span>武器槽</span></div>
         </div>
       </div>
 
@@ -141,6 +141,7 @@
     <!-- 右侧按钮 -->
     <div class="action-buttons">
       <button id="btn-jump" class="abtn jump">跳</button>
+      <button id="btn-scope" class="abtn scope hidden" type="button">开镜</button>
       <button id="btn-weapon" class="abtn weapon"><span id="weapon-name">AR-30</span><small id="weapon-role">步枪</small></button>
       <button id="btn-reload" class="abtn reload"><span id="ammo-count">30/30</span><small>换弹</small></button>
       <button id="btn-fire" class="abtn fire">射击</button>
@@ -153,6 +154,20 @@
       <button class="weapon-slot" data-weapon="pistol" type="button">
         <b>2</b><span>PX-7</span><small id="pistol-ammo">12</small>
       </button>
+      <button class="weapon-slot" data-weapon="sniper" type="button">
+        <b>3</b><span>SR-90</span><small id="sniper-ammo">5</small>
+      </button>
+    </div>
+
+    <div id="scope-overlay" class="scope-overlay">
+      <div class="scope-glass">
+        <span class="scope-line h"></span>
+        <span class="scope-line v"></span>
+        <span class="scope-mark top"></span>
+        <span class="scope-mark bottom"></span>
+        <span class="scope-mark left"></span>
+        <span class="scope-mark right"></span>
+      </div>
     </div>
 
     <!-- 顶部状态提示（如对手断线） -->
@@ -190,10 +205,11 @@
         <li><b>左下摇杆</b>：前后左右移动</li>
         <li><b>右侧滑动</b>：转动视角 / 瞄准</li>
         <li><b>射击</b>按钮：使用当前武器开火</li>
-        <li><b>武器</b>按钮：切换 AR-30 / PX-7</li>
+        <li><b>武器</b>按钮：切换 AR-30 / PX-7 / SR-90</li>
         <li><b>换弹</b>按钮：装填当前武器</li>
         <li><b>跳</b>按钮：跳跃越过掩体</li>
-        <li><b>键盘</b>：WASD 移动，1/2 切枪，R 换弹，空格跳跃</li>
+        <li><b>键盘</b>：WASD 移动，1/2/3 切枪，R 换弹，空格跳跃</li>
+        <li><b>狙击枪</b>：切到 SR-90 后点开镜；键盘 3 切枪，E 或鼠标右键开镜</li>
         <li><b>战术补给</b>：场内刷新血包、护甲、弹药箱和疾跑芯片</li>
         <li>击败对手 +1 分，被击败后 3 秒复活</li>
         <li>单局 3 分钟，比分高者获胜；平局进入 30 秒加时</li>
@@ -232,7 +248,22 @@
           <button data-quality="1.25" type="button">清晰</button>
         </div>
       </div>
+      <div class="setting-row action-setting-row">
+        <span>按钮位置</span>
+        <button id="btn-layout-edit" class="btn btn-secondary compact-btn" type="button">编辑布局</button>
+      </div>
       <button id="btn-settings-reset" class="btn btn-ghost" type="button">恢复默认</button>
+    </div>
+  </div>
+
+  <div id="layout-editor" class="layout-editor">
+    <div class="layout-toolbar">
+      <b>按钮布局</b>
+      <div class="layout-toolbar-actions">
+        <button id="btn-layout-reset" type="button">重置</button>
+        <button id="btn-layout-cancel" type="button">取消</button>
+        <button id="btn-layout-save" type="button">完成</button>
+      </div>
     </div>
   </div>
 

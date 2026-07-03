@@ -22,20 +22,31 @@ let lastPlayers = [];
 let currentMode = 'classic';
 let selectedMode = 'classic';
 const MODE_LABELS = { classic: '传统对战', supply: '战术补给' };
+const LAYOUT_TARGETS = [
+  { key: 'joystick', selector: '#joystick', label: '移动' },
+  { key: 'fire', selector: '#btn-fire', label: '射击' },
+  { key: 'jump', selector: '#btn-jump', label: '跳跃' },
+  { key: 'reload', selector: '#btn-reload', label: '换弹' },
+  { key: 'weapon', selector: '#btn-weapon', label: '武器' },
+  { key: 'scope', selector: '#btn-scope', label: '开镜' },
+  { key: 'weaponStrip', selector: '.weapon-strip', label: '武器栏' },
+];
 
 const defaultSettings = {
   sensitivity: 100,
   volume: 65,
   controls: 100,
   quality: 1,
+  layout: {},
 };
 let settings = loadSettings();
 
 function loadSettings() {
   try {
-    return { ...defaultSettings, ...(JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {}) };
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY)) || {};
+    return { ...defaultSettings, ...saved, layout: normalizeLayout(saved.layout || {}) };
   } catch (e) {
-    return { ...defaultSettings };
+    return { ...defaultSettings, layout: {} };
   }
 }
 
@@ -44,10 +55,12 @@ function saveSettings() {
 }
 
 function applySettings() {
+  settings.layout = normalizeLayout(settings.layout || {});
   input.setSensitivityScale(settings.sensitivity / 100);
   audio.setVolume(settings.volume / 100);
   world.setQuality(settings.quality);
   document.documentElement.style.setProperty('--control-scale', settings.controls / 100);
+  applyControlLayout(settings.layout);
   syncSettingsUI();
 }
 
@@ -61,6 +74,55 @@ function syncSettingsUI() {
   document.querySelectorAll('#set-quality button').forEach((b) => {
     b.classList.toggle('active', Number(b.dataset.quality) === Number(settings.quality));
   });
+}
+
+function clampPct(value) {
+  return Math.max(4, Math.min(96, Number(value) || 0));
+}
+
+function normalizeLayout(layout) {
+  const out = {};
+  if (!layout || typeof layout !== 'object') return out;
+  const allowed = new Set(LAYOUT_TARGETS.map((t) => t.key));
+  Object.entries(layout).forEach(([key, pos]) => {
+    if (!allowed.has(key) || !pos) return;
+    const x = clampPct(pos.x);
+    const y = clampPct(pos.y);
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      out[key] = { x: Number(x.toFixed(2)), y: Number(y.toFixed(2)) };
+    }
+  });
+  return out;
+}
+
+function getLayoutEl(target) {
+  return document.querySelector(target.selector);
+}
+
+function clearCustomPosition(el) {
+  el.classList.remove('layout-custom');
+  el.style.removeProperty('--layout-x');
+  el.style.removeProperty('--layout-y');
+}
+
+function applyControlLayout(layout = {}) {
+  const normalized = normalizeLayout(layout);
+  LAYOUT_TARGETS.forEach((target) => {
+    const el = getLayoutEl(target);
+    if (!el) return;
+    const pos = normalized[target.key];
+    if (!pos) {
+      clearCustomPosition(el);
+      return;
+    }
+    el.classList.add('layout-custom');
+    el.style.setProperty('--layout-x', pos.x + '%');
+    el.style.setProperty('--layout-y', pos.y + '%');
+  });
+}
+
+function copyLayout(layout) {
+  return normalizeLayout(JSON.parse(JSON.stringify(layout || {})));
 }
 
 // ---------------- UI 适配层 ----------------
@@ -118,6 +180,13 @@ const ui = {
     $('speed-chip').textContent = `加速 ${speed}s`;
     $('speed-chip').classList.toggle('hidden', speed <= 0);
   },
+  setScope(active, available) {
+    $('btn-scope').classList.toggle('hidden', !available);
+    $('btn-scope').classList.toggle('active', !!active);
+    $('btn-scope').textContent = active ? '收镜' : '开镜';
+    $('scope-overlay').classList.toggle('show', !!active);
+    document.body.classList.toggle('scoped', !!active);
+  },
   showKill(text, dead) {
     const feed = $('killfeed');
     const el = document.createElement('div');
@@ -174,6 +243,7 @@ function enterMatch() {
   show('screen-hud');
   ui.setMode(net.mode || selectedMode);
   ui.setEffects({ armor: 0, effects: { speed: 0 } });
+  ui.setScope(false, false);
   ui.setWeapon(WEAPONS.defaultId, Object.fromEntries(WEAPONS.list.map((w) => [w.id, w.mag])), false);
   ui.setAmmo(DEFAULT_WEAPON.mag, DEFAULT_WEAPON.mag, false);
 }
@@ -239,7 +309,9 @@ function openModal(id) {
 
 function closeModal(id) {
   $(id).classList.remove('show');
-  if (!$('help-modal').classList.contains('show') && !$('settings-modal').classList.contains('show')) {
+  if (!$('help-modal').classList.contains('show') &&
+      !$('settings-modal').classList.contains('show') &&
+      !document.body.classList.contains('layout-editing')) {
     document.body.classList.remove('menu-open');
   }
 }
@@ -247,6 +319,112 @@ function closeModal(id) {
 function openSettings() {
   syncSettingsUI();
   openModal('settings-modal');
+}
+
+let layoutBackup = null;
+let layoutDraft = null;
+let layoutDrag = null;
+
+function setLayoutTargetsActive(active) {
+  LAYOUT_TARGETS.forEach((target) => {
+    const el = getLayoutEl(target);
+    if (!el) return;
+    el.classList.toggle('layout-target', active);
+    if (active) {
+      el.dataset.layoutKey = target.key;
+      el.dataset.layoutLabel = target.label;
+    } else {
+      delete el.dataset.layoutKey;
+      delete el.dataset.layoutLabel;
+    }
+  });
+}
+
+function closeLayoutEditor(save) {
+  if (!layoutDraft) return;
+  if (save) {
+    settings.layout = normalizeLayout(layoutDraft);
+    saveSettings();
+  } else {
+    settings.layout = copyLayout(layoutBackup);
+  }
+  applySettings();
+  setLayoutTargetsActive(false);
+  document.body.classList.remove('layout-editing');
+  if (!$('help-modal').classList.contains('show') && !$('settings-modal').classList.contains('show')) {
+    document.body.classList.remove('menu-open');
+  }
+  layoutBackup = null;
+  layoutDraft = null;
+  layoutDrag = null;
+}
+
+function openLayoutEditor() {
+  closeModal('settings-modal');
+  layoutBackup = copyLayout(settings.layout);
+  layoutDraft = copyLayout(settings.layout);
+  document.body.classList.add('menu-open', 'layout-editing');
+  setLayoutTargetsActive(true);
+  applyControlLayout(layoutDraft);
+}
+
+function targetByKey(key) {
+  return LAYOUT_TARGETS.find((t) => t.key === key);
+}
+
+function setLayoutPosition(key, centerX, centerY) {
+  const target = targetByKey(key);
+  const el = target && getLayoutEl(target);
+  if (!el || !layoutDraft) return;
+  const rect = el.getBoundingClientRect();
+  const halfW = rect.width / 2;
+  const halfH = rect.height / 2;
+  const x = Math.max(halfW, Math.min(window.innerWidth - halfW, centerX));
+  const y = Math.max(halfH, Math.min(window.innerHeight - halfH, centerY));
+  layoutDraft[key] = {
+    x: Number((x / window.innerWidth * 100).toFixed(2)),
+    y: Number((y / window.innerHeight * 100).toFixed(2)),
+  };
+  applyControlLayout(layoutDraft);
+}
+
+function stopLayoutEvent(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+}
+
+function onLayoutPointerDown(e) {
+  if (!document.body.classList.contains('layout-editing')) return;
+  const el = e.target.closest && e.target.closest('.layout-target');
+  if (!el) return;
+  stopLayoutEvent(e);
+  const key = el.dataset.layoutKey;
+  const rect = el.getBoundingClientRect();
+  const centerX = rect.left + rect.width / 2;
+  const centerY = rect.top + rect.height / 2;
+  layoutDrag = {
+    key,
+    pointerId: e.pointerId,
+    offsetX: e.clientX - centerX,
+    offsetY: e.clientY - centerY,
+  };
+  setLayoutPosition(key, centerX, centerY);
+  if (el.setPointerCapture && e.pointerId !== undefined) {
+    try { el.setPointerCapture(e.pointerId); } catch (err) {}
+  }
+}
+
+function onLayoutPointerMove(e) {
+  if (!layoutDrag) return;
+  stopLayoutEvent(e);
+  setLayoutPosition(layoutDrag.key, e.clientX - layoutDrag.offsetX, e.clientY - layoutDrag.offsetY);
+}
+
+function onLayoutPointerUp(e) {
+  if (!layoutDrag) return;
+  stopLayoutEvent(e);
+  layoutDrag = null;
 }
 
 $('btn-settings-home').addEventListener('click', openSettings);
@@ -278,9 +456,21 @@ document.querySelectorAll('#set-quality button').forEach((b) => {
   });
 });
 $('btn-settings-reset').addEventListener('click', () => {
-  settings = { ...defaultSettings };
+  settings = { ...defaultSettings, layout: {} };
   applySettings(); saveSettings();
 });
+$('btn-layout-edit').addEventListener('click', openLayoutEditor);
+$('btn-layout-save').addEventListener('click', () => closeLayoutEditor(true));
+$('btn-layout-cancel').addEventListener('click', () => closeLayoutEditor(false));
+$('btn-layout-reset').addEventListener('click', () => {
+  if (!layoutDraft) return;
+  layoutDraft = {};
+  applyControlLayout(layoutDraft);
+});
+document.addEventListener('pointerdown', onLayoutPointerDown, true);
+document.addEventListener('pointermove', onLayoutPointerMove, true);
+document.addEventListener('pointerup', onLayoutPointerUp, true);
+document.addEventListener('pointercancel', onLayoutPointerUp, true);
 
 // ---------------- 单人训练 ----------------
 let soloDifficulty = 'normal';
@@ -341,6 +531,7 @@ function resetToHome() {
   if (game.opp) { world.removeRemotePlayer(game.opp.slot); game.opp = null; }
   world.updatePickups([]);
   ui.setEffects({ armor: 0, effects: { speed: 0 } });
+  ui.setScope(false, false);
   show('screen-home');
 }
 

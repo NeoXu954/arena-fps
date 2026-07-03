@@ -48,6 +48,28 @@
       remoteScale: 1.15,
       remotePos: { x: 0.05, y: 1.06, z: 0.18 },
     },
+    {
+      id: 'sniper',
+      label: 'SR-90',
+      role: '狙击枪',
+      mag: 5,
+      damage: 95,
+      fireInterval: 1.12,
+      cooldownMs: 1080,
+      reloadMs: 2450,
+      spread: 0.045,
+      hipSpread: 0.045,
+      scopeSpread: 0.0015,
+      recoil: 0.090,
+      kick: 0.115,
+      muzzleZ: -0.93,
+      viewScale: 0.95,
+      viewPos: { x: 0.005, y: -0.015, z: 0.02 },
+      remoteScale: 0.92,
+      remotePos: { x: 0.02, y: 1.04, z: 0.34 },
+      scopedFov: 32,
+      adsMoveScale: 0.72,
+    },
   ];
 
   const byId = Object.fromEntries(list.map((w) => [w.id, w]));

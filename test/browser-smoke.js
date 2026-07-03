@@ -43,6 +43,40 @@ async function newPage(browser, tag) {
     // 首页可见
     const homeVisible = await a.evaluate(() => document.getElementById('screen-home').classList.contains('active'));
     assert(homeVisible, '首页正确显示');
+
+    await a.evaluate(() => localStorage.removeItem('arena-fps-settings-v2'));
+    await a.click('#btn-settings-home');
+    await sleep(150);
+    await a.click('#btn-layout-edit');
+    await sleep(200);
+    const layoutOpen = await a.evaluate(() => ({
+      editing: document.body.classList.contains('layout-editing'),
+      targets: document.querySelectorAll('.layout-target').length,
+    }));
+    assert(layoutOpen.editing && layoutOpen.targets >= 7, '按钮布局编辑器可打开');
+    const fireStart = await a.evaluate(() => {
+      const r = document.getElementById('btn-fire').getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    });
+    await a.mouse.move(fireStart.x, fireStart.y);
+    await a.mouse.down();
+    await a.mouse.move(fireStart.x - 80, fireStart.y - 36, { steps: 6 });
+    await a.mouse.up();
+    await sleep(150);
+    await a.click('#btn-layout-save');
+    await sleep(150);
+    const savedLayout = await a.evaluate(() => JSON.parse(localStorage.getItem('arena-fps-settings-v2')).layout || {});
+    assert(!!savedLayout.fire, '按钮布局保存到本地设置');
+    await a.click('#btn-settings-home');
+    await sleep(120);
+    await a.click('#btn-layout-edit');
+    await sleep(120);
+    await a.click('#btn-layout-reset');
+    await a.click('#btn-layout-save');
+    await sleep(120);
+    const resetLayout = await a.evaluate(() => JSON.parse(localStorage.getItem('arena-fps-settings-v2')).layout || {});
+    assert(Object.keys(resetLayout).length === 0, '按钮布局可恢复默认');
+
     await a.click('.mode-btn[data-mode="supply"]');
     const supplySelected = await a.evaluate(() => document.querySelector('.mode-btn[data-mode="supply"]').classList.contains('active'));
     assert(supplySelected, '可选择战术补给模式');
@@ -65,6 +99,7 @@ async function newPage(browser, tag) {
 
     // 等待倒计时结束进入对战
     await sleep(4500);
+    await a.bringToFront();
     const aInGame = await a.evaluate(() => document.getElementById('screen-hud').classList.contains('active'));
     const bInGame = await b.evaluate(() => document.getElementById('screen-hud').classList.contains('active'));
     assert(aInGame && bInGame, '双方进入对战 HUD 界面');
@@ -74,6 +109,28 @@ async function newPage(browser, tag) {
     assert(/^\d:\d{2}$/.test(timer), 'A HUD 计时显示正常: ' + timer);
     const modeChip = await a.evaluate(() => document.getElementById('mode-chip').textContent);
     assert(modeChip.includes('战术补给'), 'A HUD 显示战术补给模式');
+
+    const sniperCenter = await a.evaluate(() => {
+      const slot = document.querySelector('.weapon-slot[data-weapon="sniper"]');
+      const r = slot.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    });
+    await a.touchscreen.tap(sniperCenter.x, sniperCenter.y);
+    await sleep(300);
+    const sniperUi = await a.evaluate(() => ({
+      weapon: document.getElementById('weapon-name').textContent,
+      scopeVisible: !document.getElementById('btn-scope').classList.contains('hidden'),
+    }));
+    assert(sniperUi.weapon === 'SR-90' && sniperUi.scopeVisible, 'A 可切换 SR-90，开镜按钮显示');
+    const scopeCenter = await a.evaluate(() => {
+      const scope = document.getElementById('btn-scope');
+      const r = scope.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    });
+    await a.touchscreen.tap(scopeCenter.x, scopeCenter.y);
+    await sleep(250);
+    const scoped = await a.evaluate(() => document.getElementById('scope-overlay').classList.contains('show'));
+    assert(scoped, 'SR-90 开镜镜罩显示');
 
     // 模拟射击：调用内部？改为派发触摸到射击按钮，验证不报错
     await a.evaluate(() => {

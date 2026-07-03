@@ -121,7 +121,7 @@ export class World {
   // GLB 预加载
   _preload() {
     const loader = new GLTFLoader();
-    const names = ['soldier', 'rifle', 'pistol', 'wall', 'cover', 'crate', 'stairs'];
+    const names = ['soldier', 'rifle', 'pistol', 'sniper', 'wall', 'cover', 'crate', 'stairs'];
     const load = (name) => new Promise((resolve, reject) => {
       loader.load(MODEL_URL + name + '.glb',
         (gltf) => { this.models[name] = gltf.scene; resolve(); },
