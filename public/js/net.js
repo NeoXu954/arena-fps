@@ -17,7 +17,7 @@ export class Net {
     const passthrough = [
       'roomState', 'snapshot', 'matchStart', 'countdown', 'overtime', 'gameOver',
       'oppState', 'oppShot', 'hit', 'kill', 'respawn', 'reloadStart', 'reloaded',
-      'shotResult', 'emptyMag', 'weaponChanged', 'oppWeapon',
+      'shotResult', 'emptyMag', 'weaponChanged', 'oppWeapon', 'pickup', 'pickupSpawned',
       'opponentLeft', 'opponentDisconnected', 'opponentReconnected',
     ];
     passthrough.forEach((ev) => this.socket.on(ev, (d) => this._emitLocal(ev, d)));
@@ -29,6 +29,7 @@ export class Net {
         this.socket.emit('rejoin', { roomId: this.roomId, token: this.token }, (res) => {
           if (res && res.ok) {
             this.slot = res.slot;
+            this.mode = res.mode;
             this._emitLocal('rejoined', res);
           } else {
             this._emitLocal('rejoinFailed', res);
@@ -39,10 +40,12 @@ export class Net {
     this.socket.on('disconnect', () => this._emitLocal('disconnected'));
   }
 
-  createRoom(name) {
+  createRoom(name, mode) {
     return new Promise((resolve) => {
-      this.socket.emit('createRoom', { name }, (res) => {
-        if (res && res.ok) { this.roomId = res.roomId; this.token = res.token; this.slot = res.slot; }
+      this.socket.emit('createRoom', { name, mode }, (res) => {
+        if (res && res.ok) {
+          this.roomId = res.roomId; this.token = res.token; this.slot = res.slot; this.mode = res.mode; this.solo = false;
+        }
         resolve(res);
       });
     });
@@ -51,17 +54,20 @@ export class Net {
   joinRoom(roomId, name) {
     return new Promise((resolve) => {
       this.socket.emit('joinRoom', { roomId, name }, (res) => {
-        if (res && res.ok) { this.roomId = res.roomId; this.token = res.token; this.slot = res.slot; }
+        if (res && res.ok) {
+          this.roomId = res.roomId; this.token = res.token; this.slot = res.slot; this.mode = res.mode; this.solo = false;
+        }
         resolve(res);
       });
     });
   }
 
-  startSolo(name, difficulty) {
+  startSolo(name, difficulty, mode) {
     return new Promise((resolve) => {
-      this.socket.emit('startSolo', { name, difficulty }, (res) => {
+      this.socket.emit('startSolo', { name, difficulty, mode }, (res) => {
         if (res && res.ok) {
           this.roomId = res.roomId; this.token = res.token; this.slot = res.slot;
+          this.mode = res.mode;
           this.solo = true;
         }
         resolve(res);
@@ -71,7 +77,7 @@ export class Net {
 
   leaveRoom() {
     this.socket.emit('leaveRoom');
-    this.roomId = null; this.token = null; this.slot = null; this.solo = false;
+    this.roomId = null; this.token = null; this.slot = null; this.mode = null; this.solo = false;
   }
 
   sendMove(state) { this.socket.emit('move', state); }

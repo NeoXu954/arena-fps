@@ -38,6 +38,8 @@ export class Game {
     this.recoil = 0;
     this.alive = true;
     this.invulnUntil = 0;
+    this.armor = 0;
+    this.effects = { speed: 0 };
 
     this.weaponId = WEAPONS.defaultId;
     this.ammoByWeapon = freshAmmo();
@@ -64,6 +66,8 @@ export class Game {
     this.pos.set(sp.x, 0, sp.z);
     this.vy = 0; this.yaw = sp.yaw; this.pitch = 0;
     this.alive = true;
+    this.armor = 0;
+    this.effects = { speed: 0 };
     this.weaponId = WEAPONS.defaultId;
     this.ammoByWeapon = freshAmmo();
     this.ammo = this.ammoByWeapon[this.weaponId];
@@ -110,18 +114,24 @@ export class Game {
       this.ui.setAmmo(this.ammo, this._weapon().mag, this.reloading);
     });
     net.on('emptyMag', () => { this.ui.toast('弹匣已空，请换弹'); });
+    net.on('pickup', (d) => this._onPickup(d));
+    net.on('pickupSpawned', (d) => {
+      if (d && d.pickups && this.world.updatePickups) this.world.updatePickups(d.pickups);
+    });
   }
 
   _applySnapshot(s) {
     this.phase = s.phase;
     this.ui.setTimer(s.timeLeft, s.phase);
     if (this.ui.updateSnapshot) this.ui.updateSnapshot(s);
+    if (s.pickups && this.world.updatePickups) this.world.updatePickups(s.pickups);
     const me = s.players.find((p) => p.slot === this.slot);
     const op = s.players.find((p) => p.slot !== this.slot);
     if (me) {
       this._applyPlayerPacket(me);
       this.reloading = !!me.reloading;
       this.ui.setHP('me', me.hp);
+      if (this.ui.setEffects) this.ui.setEffects(me);
       this.ui.setWeapon(this.weaponId, this.ammoByWeapon, this.reloading);
       this.ui.setScore(this.slot === 0 ? [me.score, op ? op.score : 0] : [op ? op.score : 0, me.score], this.slot);
       // 死亡 / 复活倒计时
@@ -232,12 +242,25 @@ export class Game {
       mag: p.mag,
     });
     if (p.stats) this.stats = p.stats;
+    this.armor = p.armor || 0;
+    this.effects = p.effects || { speed: 0 };
+    if (this.ui.setEffects) this.ui.setEffects(p);
   }
 
   _onWeaponChanged(d) {
     this.reloading = false;
     this._applyAmmoPacket(d);
     this.ui.setAmmo(this.ammo, this._weapon().mag, false);
+  }
+
+  _onPickup(d) {
+    if (d && d.pickups && this.world.updatePickups) this.world.updatePickups(d.pickups);
+    if (!d || d.slot !== this.slot) return;
+    this._applyPlayerPacket(d);
+    this.ui.setAmmo(this.ammo, this._weapon().mag, this.reloading);
+    const suffix = d.type === 'health' ? ` +${d.applied && d.applied.heal ? d.applied.heal : ''}` :
+      d.type === 'armor' ? ` +${d.applied && d.applied.armorGained ? d.applied.armorGained : ''}` : '';
+    this.ui.toast(`拾取 ${d.label}${suffix}`);
   }
 
   // ---------------------------------------------------------------- 主循环
@@ -303,8 +326,9 @@ export class Game {
     // 前进向量（yaw=0 朝 -Z）
     const fx = -sin, fz = -cos;
     const rx = cos, rz = -sin;
-    let vx = (fx * mv.y + rx * mv.x) * SPEED;
-    let vz = (fz * mv.y + rz * mv.x) * SPEED;
+    const speedScale = this.effects && this.effects.speed > 0 ? 1.22 : 1;
+    let vx = (fx * mv.y + rx * mv.x) * SPEED * speedScale;
+    let vz = (fz * mv.y + rz * mv.x) * SPEED * speedScale;
 
     // 跳跃
     if (this.input.consumeJump() && this.grounded) {

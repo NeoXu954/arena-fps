@@ -25,6 +25,13 @@ const TYPE_TO_MODEL = {
   crate: 'crate',
 };
 
+const PICKUP_VISUALS = {
+  health: { color: 0x22c55e, emissive: 0x14532d },
+  armor: { color: 0x38e8ff, emissive: 0x155e75 },
+  ammo: { color: 0xf59e0b, emissive: 0x78350f },
+  haste: { color: 0xa78bfa, emissive: 0x4c1d95 },
+};
+
 export class World {
   constructor(canvas) {
     this.canvas = canvas;
@@ -34,11 +41,13 @@ export class World {
     this.modelsReady = false;
     this.activeViewWeapon = WEAPONS.defaultId;
     this.pixelRatioScale = 1;
+    this.pickupNodes = new Map();
 
     this._initRenderer();
     this._initScene();
     this._buildGround();     // 地面 / 网格 / 出生点（同步，无 GLB）
     this._buildColliders();  // 碰撞盒（同步，始终存在）
+    this._initPickups();
     this._initViewModel();   // 占位 vm 结构（同步，game.js 依赖这些引用）
 
     // 异步预加载 GLB，成功后替换为 3D 素材，失败则回退到方块
@@ -206,6 +215,110 @@ export class World {
     mesh.position.set(b.cx, b.cy, b.cz);
     mesh.castShadow = true; mesh.receiveShadow = true;
     parent.add(mesh);
+  }
+
+  _initPickups() {
+    this.pickupGroup = new THREE.Group();
+    this.scene.add(this.pickupGroup);
+  }
+
+  _createPickupNode(pickup) {
+    const visual = PICKUP_VISUALS[pickup.type] || PICKUP_VISUALS.ammo;
+    const group = new THREE.Group();
+    group.userData.type = pickup.type;
+    group.userData.phase = Math.random() * Math.PI * 2;
+
+    const base = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.48, 0.6, 0.14, 8),
+      new THREE.MeshStandardMaterial({ color: 0x111827, roughness: 0.7, metalness: 0.35 })
+    );
+    base.position.y = 0.07;
+    base.castShadow = true;
+    base.receiveShadow = true;
+    group.add(base);
+
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(0.44, 0.025, 8, 24),
+      new THREE.MeshBasicMaterial({ color: visual.color, transparent: true, opacity: 0.7 })
+    );
+    ring.name = '__pickup_ring';
+    ring.rotation.x = Math.PI / 2;
+    ring.position.y = 0.18;
+    group.add(ring);
+
+    const mat = new THREE.MeshStandardMaterial({
+      color: visual.color,
+      emissive: visual.emissive,
+      emissiveIntensity: 0.45,
+      roughness: 0.45,
+      metalness: 0.18,
+    });
+
+    const core = new THREE.Group();
+    core.name = '__pickup_core';
+    if (pickup.type === 'health') {
+      const a = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.14, 0.16), mat);
+      const b = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.42, 0.16), mat);
+      core.add(a, b);
+    } else if (pickup.type === 'armor') {
+      core.add(new THREE.Mesh(new THREE.OctahedronGeometry(0.32, 0), mat));
+    } else if (pickup.type === 'haste') {
+      const bolt = new THREE.Mesh(new THREE.TetrahedronGeometry(0.34, 0), mat);
+      bolt.rotation.set(0.3, 0.5, 0.2);
+      core.add(bolt);
+    } else {
+      const box = new THREE.Mesh(new THREE.BoxGeometry(0.46, 0.3, 0.3), mat);
+      box.rotation.y = Math.PI / 4;
+      core.add(box);
+    }
+    core.position.y = 0.55;
+    core.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+    group.add(core);
+
+    const glow = new THREE.PointLight(visual.color, 0.75, 5);
+    glow.name = '__pickup_glow';
+    glow.position.y = 0.75;
+    group.add(glow);
+
+    this.pickupGroup.add(group);
+    return group;
+  }
+
+  updatePickups(pickups = []) {
+    if (!this.pickupGroup) return;
+    const seen = new Set();
+    pickups.forEach((pickup) => {
+      seen.add(pickup.id);
+      let node = this.pickupNodes.get(pickup.id);
+      if (!node) {
+        node = this._createPickupNode(pickup);
+        this.pickupNodes.set(pickup.id, node);
+      }
+      node.position.set(pickup.pos.x, pickup.pos.y || 0.35, pickup.pos.z);
+      node.visible = !!pickup.active;
+      node.userData.active = !!pickup.active;
+    });
+    for (const [id, node] of this.pickupNodes.entries()) {
+      if (seen.has(id)) continue;
+      this.pickupGroup.remove(node);
+      this.pickupNodes.delete(id);
+    }
+  }
+
+  _animatePickups() {
+    if (!this.pickupGroup) return;
+    const t = performance.now() * 0.001;
+    this.pickupNodes.forEach((node) => {
+      if (!node.visible) return;
+      const phase = node.userData.phase || 0;
+      const core = node.getObjectByName('__pickup_core');
+      const ring = node.getObjectByName('__pickup_ring');
+      if (core) {
+        core.position.y = 0.55 + Math.sin(t * 2.5 + phase) * 0.08;
+        core.rotation.y += 0.025;
+      }
+      if (ring) ring.rotation.z += 0.018;
+    });
   }
 
   // 第一人称武器占位结构（同步创建，game.js 依赖 viewModel/muzzle/muzzleFlash/flashLight/vmBase）
@@ -420,6 +533,7 @@ export class World {
   }
 
   render() {
+    this._animatePickups();
     this.renderer.render(this.scene, this.camera);
   }
 }

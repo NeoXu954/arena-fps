@@ -46,6 +46,28 @@ const SNAPSHOT_EVERY = 2;  // 每 2 个 tick 广播一次权威快照（≈15Hz�
 const DROP_GRACE_MS = 10000; // 断线宽限，期间可重连
 
 const COLORS = [0x3b82f6, 0xef4444]; // 蓝 / 红
+const MODES = {
+  classic: { id: 'classic', label: '传统对战' },
+  supply: { id: 'supply', label: '战术补给' },
+};
+const ARMOR_MAX = 75;
+const SPEED_BUFF_MS = 8000;
+const SPEED_BUFF_SCALE = 1.22;
+const SUPPLY_TYPES = {
+  health: { label: '急救包', respawnMs: 12000, heal: 35 },
+  armor: { label: '护甲板', respawnMs: 15000, armor: 50 },
+  ammo: { label: '弹药箱', respawnMs: 10000 },
+  haste: { label: '疾跑芯片', respawnMs: 18000, durationMs: SPEED_BUFF_MS },
+};
+const SUPPLY_POINTS = [
+  { id: 'center-health', type: 'health', pos: { x: 0, y: 0.35, z: 0 }, radius: 1.2 },
+  { id: 'north-armor', type: 'armor', pos: { x: 0, y: 0.35, z: 10 }, radius: 1.15 },
+  { id: 'south-armor', type: 'armor', pos: { x: 0, y: 0.35, z: -10 }, radius: 1.15 },
+  { id: 'east-ammo', type: 'ammo', pos: { x: 12, y: 0.35, z: 0 }, radius: 1.15 },
+  { id: 'west-ammo', type: 'ammo', pos: { x: -12, y: 0.35, z: 0 }, radius: 1.15 },
+  { id: 'northwest-haste', type: 'haste', pos: { x: -10, y: 0.35, z: 11 }, radius: 1.15 },
+  { id: 'southeast-haste', type: 'haste', pos: { x: 10, y: 0.35, z: -11 }, radius: 1.15 },
+];
 
 // ---------------------------------------------------------------------------
 // 房间存储
@@ -65,6 +87,38 @@ function weaponConfig(id) {
   return WEAPONS.byId[id] || WEAPONS.byId[WEAPONS.defaultId];
 }
 
+function normalizeMode(mode) {
+  return mode === MODES.supply.id ? MODES.supply.id : MODES.classic.id;
+}
+
+function modeLabel(mode) {
+  return (MODES[normalizeMode(mode)] || MODES.classic).label;
+}
+
+function freshSupplyPickups() {
+  return SUPPLY_POINTS.map((p) => ({
+    id: p.id,
+    type: p.type,
+    label: SUPPLY_TYPES[p.type].label,
+    pos: { ...p.pos },
+    radius: p.radius,
+    active: true,
+    nextAt: 0,
+  }));
+}
+
+function publicPickups(room, now = Date.now()) {
+  if (!room || room.mode !== MODES.supply.id) return [];
+  return room.pickups.map((p) => ({
+    id: p.id,
+    type: p.type,
+    label: p.label,
+    pos: { ...p.pos },
+    active: !!p.active,
+    nextIn: p.active ? 0 : Math.max(0, p.nextAt - now),
+  }));
+}
+
 function freshAmmo() {
   return Object.fromEntries(WEAPONS.list.map((w) => [w.id, w.mag]));
 }
@@ -78,6 +132,10 @@ function freshStats() {
     damageDealt: 0,
     damageTaken: 0,
     reloads: 0,
+    pickups: 0,
+    healing: 0,
+    armorGained: 0,
+    armorBlocked: 0,
   };
 }
 
@@ -116,6 +174,8 @@ function makePlayer(slot) {
     pitch: 0,
     moving: false,
     hp: MAX_HP,
+    armor: 0,
+    speedUntil: 0,
     weapon,
     ammoByWeapon,
     ammo: ammoByWeapon[weapon],
@@ -163,8 +223,10 @@ function makeBot(slot, difficulty) {
 
 function createRoom(opts) {
   const id = genRoomId();
+  const mode = normalizeMode(opts && opts.mode);
   const room = {
     id,
+    mode,
     players: [], // index by slot
     phase: 'waiting', // waiting | countdown | playing | overtime | ended
     phaseEnd: 0,      // 当前阶段结束的时间戳（countdown/playing/overtime）
@@ -174,6 +236,7 @@ function createRoom(opts) {
     createdAt: Date.now(),
     result: null,
     solo: !!(opts && opts.solo), // 单人模式（含 bot），对手离开即销毁
+    pickups: mode === MODES.supply.id ? freshSupplyPickups() : [],
   };
   rooms.set(id, room);
   return room;
@@ -184,6 +247,7 @@ function roomActivePlayers(room) {
 }
 
 function publicPlayer(p) {
+  const now = Date.now();
   const cfg = weaponConfig(p.weapon);
   syncCurrentAmmo(p);
   return {
@@ -196,6 +260,10 @@ function publicPlayer(p) {
     weapon: cfg.id,
     mag: cfg.mag,
     reloading: p.reloading,
+    armor: p.armor || 0,
+    effects: {
+      speed: Math.max(0, (p.speedUntil || 0) - now),
+    },
     alive: p.alive,
     score: p.score,
     connected: p.connected,
@@ -213,8 +281,11 @@ function roomState(room) {
   }
   return {
     roomId: room.id,
+    mode: room.mode,
+    modeLabel: modeLabel(room.mode),
     phase: room.phase,
     timeLeft,
+    pickups: publicPickups(room, now),
     players: room.players.filter(Boolean).map(publicPlayer),
     result: room.result,
   };
@@ -294,6 +365,8 @@ function spawnPlayer(p) {
   p.yaw = sp.yaw;
   p.pitch = 0;
   p.hp = MAX_HP;
+  p.armor = 0;
+  p.speedUntil = 0;
   p.weapon = WEAPONS.defaultId;
   p.ammoByWeapon = freshAmmo();
   syncCurrentAmmo(p);
@@ -313,6 +386,7 @@ function startMatch(room) {
   room.phase = 'countdown';
   room.phaseEnd = Date.now() + COUNTDOWN_MS;
   room.result = null;
+  room.pickups = room.mode === MODES.supply.id ? freshSupplyPickups() : [];
   broadcastState(room);
   if (!room.loop) {
     room.loop = setInterval(() => gameTick(room), 1000 / TICK_HZ);
@@ -331,6 +405,8 @@ function endMatch(room) {
     const winner = a.score > b.score ? a.slot : b.slot;
     result = { winner, scores: [a.score, b.score] };
   }
+  result.mode = room.mode;
+  result.modeLabel = modeLabel(room.mode);
   result.players = room.players.filter(Boolean).map(publicPlayer);
   room.result = result;
   emitRoom(room, 'gameOver', { result, players: room.players.filter(Boolean).map(publicPlayer) });
@@ -355,6 +431,8 @@ function gameTick(room) {
         pos: p.pos,
         yaw: p.yaw,
         invulnUntil: p.invulnUntil,
+        armor: p.armor || 0,
+        effects: { speed: Math.max(0, (p.speedUntil || 0) - now) },
         weapon: p.weapon,
         ammo: p.ammo,
         ammoByWeapon: { ...p.ammoByWeapon },
@@ -383,6 +461,7 @@ function gameTick(room) {
       room.phase = 'overtime';
       room.phaseEnd = now + OVERTIME_MS;
       room.players.forEach((p) => p && spawnPlayer(p));
+      room.pickups = room.mode === MODES.supply.id ? freshSupplyPickups() : [];
       emitRoom(room, 'overtime', { timeLeft: OVERTIME_MS });
       broadcastState(room);
     } else {
@@ -395,6 +474,8 @@ function gameTick(room) {
     return;
   }
 
+  updatePickups(room, now);
+
   // 驱动 AI 敌人（在快照前，保证位置/血量最新）
   updateBots(room, dt);
 
@@ -403,6 +484,8 @@ function gameTick(room) {
     const players = room.players.filter(Boolean).map((p) => ({
       slot: p.slot, hp: p.hp, ammo: syncCurrentAmmo(p), ammoByWeapon: { ...p.ammoByWeapon },
       weapon: weaponConfig(p.weapon).id, mag: weaponConfig(p.weapon).mag, reloading: p.reloading,
+      armor: p.armor || 0,
+      effects: { speed: Math.max(0, (p.speedUntil || 0) - now) },
       alive: p.alive, score: p.score, connected: p.connected,
       respawnIn: p.alive ? 0 : Math.max(0, p.respawnAt - now),
       stats: { ...p.stats },
@@ -411,8 +494,132 @@ function gameTick(room) {
     if (room.phase === 'playing' || room.phase === 'overtime' || room.phase === 'countdown') {
       timeLeft = Math.max(0, room.phaseEnd - now);
     }
-    emitRoom(room, 'snapshot', { phase: room.phase, timeLeft, players });
+    emitRoom(room, 'snapshot', {
+      phase: room.phase,
+      timeLeft,
+      mode: room.mode,
+      modeLabel: modeLabel(room.mode),
+      pickups: publicPickups(room, now),
+      players,
+    });
   }
+}
+
+function needsAmmo(p) {
+  if (!p.ammoByWeapon) p.ammoByWeapon = freshAmmo();
+  return WEAPONS.list.some((w) => typeof p.ammoByWeapon[w.id] !== 'number' || p.ammoByWeapon[w.id] < w.mag);
+}
+
+function applyPickupToPlayer(room, pickup, p, now) {
+  const cfg = SUPPLY_TYPES[pickup.type];
+  if (!cfg || !p.alive) return null;
+  const result = { type: pickup.type, label: cfg.label };
+
+  if (pickup.type === 'health') {
+    if (p.hp >= MAX_HP) return null;
+    const before = p.hp;
+    p.hp = Math.min(MAX_HP, p.hp + cfg.heal);
+    const healed = p.hp - before;
+    p.stats.healing += healed;
+    result.heal = healed;
+  } else if (pickup.type === 'armor') {
+    const before = p.armor || 0;
+    p.armor = Math.min(ARMOR_MAX, before + cfg.armor);
+    const gained = p.armor - before;
+    if (gained <= 0) return null;
+    p.stats.armorGained += gained;
+    result.armorGained = gained;
+  } else if (pickup.type === 'ammo') {
+    if (!needsAmmo(p)) return null;
+    if (!p.ammoByWeapon) p.ammoByWeapon = freshAmmo();
+    WEAPONS.list.forEach((w) => { p.ammoByWeapon[w.id] = w.mag; });
+    syncCurrentAmmo(p);
+  } else if (pickup.type === 'haste') {
+    p.speedUntil = now + cfg.durationMs;
+    result.speedMs = cfg.durationMs;
+  }
+
+  p.stats.pickups += 1;
+  pickup.active = false;
+  pickup.nextAt = now + cfg.respawnMs;
+  return result;
+}
+
+function updatePickups(room, now) {
+  if (room.mode !== MODES.supply.id || (room.phase !== 'playing' && room.phase !== 'overtime')) return;
+  for (const pickup of room.pickups) {
+    if (!pickup.active && now >= pickup.nextAt) {
+      pickup.active = true;
+      emitRoom(room, 'pickupSpawned', {
+        id: pickup.id,
+        type: pickup.type,
+        label: pickup.label,
+        pos: { ...pickup.pos },
+        pickups: publicPickups(room, now),
+      });
+    }
+  }
+
+  for (const pickup of room.pickups) {
+    if (!pickup.active) continue;
+    for (const p of room.players) {
+      if (!p || !p.alive || !p.connected) continue;
+      const dist = Math.hypot(p.pos.x - pickup.pos.x, p.pos.z - pickup.pos.z);
+      if (dist > pickup.radius) continue;
+      const applied = applyPickupToPlayer(room, pickup, p, now);
+      if (!applied) continue;
+      const cfgWeapon = weaponConfig(p.weapon);
+      emitRoom(room, 'pickup', {
+        slot: p.slot,
+        id: pickup.id,
+        type: pickup.type,
+        label: pickup.label,
+        pos: { ...pickup.pos },
+        hp: p.hp,
+        armor: p.armor || 0,
+        effects: { speed: Math.max(0, (p.speedUntil || 0) - now) },
+        weapon: cfgWeapon.id,
+        ammo: syncCurrentAmmo(p),
+        ammoByWeapon: { ...p.ammoByWeapon },
+        mag: cfgWeapon.mag,
+        stats: { ...p.stats },
+        applied,
+        pickups: publicPickups(room, now),
+      });
+      break;
+    }
+  }
+}
+
+function applyDamage(room, attacker, victim, amount, point, weaponId) {
+  let remaining = amount;
+  let blocked = 0;
+  if (room.mode === MODES.supply.id && (victim.armor || 0) > 0) {
+    blocked = Math.min(victim.armor, remaining);
+    victim.armor -= blocked;
+    remaining -= blocked;
+    victim.stats.armorBlocked += blocked;
+  }
+  const before = victim.hp;
+  victim.hp = Math.max(0, victim.hp - remaining);
+  const hpDamage = before - victim.hp;
+  const totalDamage = hpDamage + blocked;
+  attacker.stats.hits += 1;
+  attacker.stats.damageDealt += totalDamage;
+  victim.stats.damageTaken += hpDamage;
+  emitRoom(room, 'hit', {
+    attacker: attacker.slot,
+    victim: victim.slot,
+    hp: victim.hp,
+    armor: victim.armor || 0,
+    armorBlocked: blocked,
+    point,
+    dmg: hpDamage,
+    totalDmg: totalDamage,
+    weapon: weaponId,
+  });
+  if (victim.hp <= 0) applyKill(room, attacker, victim);
+  return { hpDamage, blocked, totalDamage, killed: victim.hp <= 0 };
 }
 
 function applyKill(room, killer, victim) {
@@ -493,21 +700,12 @@ function botShoot(room, bot, target) {
         if (tb !== Infinity && tb < tPlayer - 0.05) { blocked = true; break; }
       }
       if (!blocked) {
-        const before = target.hp;
-        target.hp = Math.max(0, target.hp - cfgWeapon.damage);
-        const dealt = before - target.hp;
-        bot.stats.hits += 1;
-        bot.stats.damageDealt += dealt;
-        target.stats.damageTaken += dealt;
         const point = {
           x: origin.x + dir.x * tPlayer,
           y: origin.y + dir.y * tPlayer,
           z: origin.z + dir.z * tPlayer,
         };
-        emitRoom(room, 'hit', {
-          attacker: bot.slot, victim: target.slot, hp: target.hp, point, dmg: dealt, weapon: cfgWeapon.id,
-        });
-        if (target.hp <= 0) applyKill(room, bot, target);
+        applyDamage(room, bot, target, cfgWeapon.damage, point, cfgWeapon.id);
       }
     }
   }
@@ -543,6 +741,23 @@ function botTryMove(bot, dx, dz) {
 }
 
 const BOT_SPEED = 5.4; // 略低于真人 6.2，给玩家一点优势
+
+function chooseBotPickup(room, bot, now) {
+  if (room.mode !== MODES.supply.id) return null;
+  const wanted = room.pickups.filter((p) => {
+    if (!p.active) return false;
+    if (p.type === 'health') return bot.hp < 70;
+    if (p.type === 'armor') return (bot.armor || 0) < 45;
+    if (p.type === 'ammo') return needsAmmo(bot) && currentAmmo(bot) < weaponConfig(bot.weapon).mag * 0.6;
+    if (p.type === 'haste') return !(bot.speedUntil && bot.speedUntil > now);
+    return false;
+  });
+  wanted.sort((a, b) => (
+    Math.hypot(bot.pos.x - a.pos.x, bot.pos.z - a.pos.z) -
+    Math.hypot(bot.pos.x - b.pos.x, bot.pos.z - b.pos.z)
+  ));
+  return wanted[0] || null;
+}
 
 function updateBots(room, dt) {
   if (room.phase !== 'playing' && room.phase !== 'overtime') return;
@@ -581,6 +796,10 @@ function updateBots(room, dt) {
 
     // 移动：看得见目标则维持交战距离 + 侧移；否则前往记忆点
     let moveTarget = canSee ? target.pos : (ai.seenAt ? ai.lastSeenPos : null);
+    const supplyTarget = chooseBotPickup(room, bot, now);
+    if (supplyTarget && (!canSee || bot.hp < 55 || (bot.armor || 0) < 25 || currentAmmo(bot) < weaponConfig(bot.weapon).mag * 0.35)) {
+      moveTarget = supplyTarget.pos;
+    }
     if (!moveTarget) {
       // 无目标：随机游走
       if (!ai.wanderTarget || now > (ai.wanderUntil || 0) ||
@@ -618,7 +837,8 @@ function updateBots(room, dt) {
     const mlen = Math.hypot(mvx, mvz);
     if (mlen > 0.01) {
       mvx /= mlen; mvz /= mlen;
-      const step = BOT_SPEED * dt * (canSee ? 1 : cfg.aggro * 0.6 + 0.4);
+      const speedScale = (bot.speedUntil || 0) > now ? SPEED_BUFF_SCALE : 1;
+      const step = BOT_SPEED * speedScale * dt * (canSee ? 1 : cfg.aggro * 0.6 + 0.4);
       botTryMove(bot, mvx * step, 0);
       botTryMove(bot, 0, mvz * step);
       bot.moving = true;
@@ -664,7 +884,7 @@ io.on('connection', (socket) => {
 
   // 创建房间
   socket.on('createRoom', (data, cb) => {
-    const room = createRoom();
+    const room = createRoom({ mode: data && data.mode });
     const player = makePlayer(0);
     player.socketId = socket.id;
     player.connected = true;
@@ -672,14 +892,23 @@ io.on('connection', (socket) => {
     room.players[0] = player;
     socket.join(room.id);
     socketIndex.set(socket.id, { roomId: room.id, token: player.token });
-    cb && cb({ ok: true, roomId: room.id, slot: 0, token: player.token, color: player.color, map: { spawns: MAP.spawns } });
+    cb && cb({
+      ok: true,
+      roomId: room.id,
+      slot: 0,
+      token: player.token,
+      color: player.color,
+      mode: room.mode,
+      modeLabel: modeLabel(room.mode),
+      map: { spawns: MAP.spawns },
+    });
     broadcastState(room);
   });
 
   // 单人训练：玩家占 slot 0，生成 AI bot 占 slot 1，立即开赛
   socket.on('startSolo', (data, cb) => {
     const difficulty = (data && ['easy', 'normal', 'hard'].includes(data.difficulty)) ? data.difficulty : 'normal';
-    const room = createRoom({ solo: true });
+    const room = createRoom({ solo: true, mode: data && data.mode });
     const player = makePlayer(0);
     player.socketId = socket.id;
     player.connected = true;
@@ -691,7 +920,17 @@ io.on('connection', (socket) => {
 
     socket.join(room.id);
     socketIndex.set(socket.id, { roomId: room.id, token: player.token });
-    cb && cb({ ok: true, roomId: room.id, slot: 0, token: player.token, color: player.color, solo: true, difficulty });
+    cb && cb({
+      ok: true,
+      roomId: room.id,
+      slot: 0,
+      token: player.token,
+      color: player.color,
+      solo: true,
+      difficulty,
+      mode: room.mode,
+      modeLabel: modeLabel(room.mode),
+    });
     startMatch(room);
   });
 
@@ -720,7 +959,7 @@ io.on('connection', (socket) => {
     room.players[slot] = player;
     socket.join(room.id);
     socketIndex.set(socket.id, { roomId: room.id, token: player.token });
-    cb && cb({ ok: true, roomId: room.id, slot, token: player.token, color: player.color });
+    cb && cb({ ok: true, roomId: room.id, slot, token: player.token, color: player.color, mode: room.mode, modeLabel: modeLabel(room.mode) });
 
     broadcastState(room);
 
@@ -741,7 +980,16 @@ io.on('connection', (socket) => {
     player.dropAt = 0;
     socket.join(room.id);
     socketIndex.set(socket.id, { roomId: room.id, token: player.token });
-    cb && cb({ ok: true, roomId: room.id, slot: player.slot, token: player.token, color: player.color, state: roomState(room) });
+    cb && cb({
+      ok: true,
+      roomId: room.id,
+      slot: player.slot,
+      token: player.token,
+      color: player.color,
+      mode: room.mode,
+      modeLabel: modeLabel(room.mode),
+      state: roomState(room),
+    });
     emitRoom(room, 'opponentReconnected', { slot: player.slot });
     broadcastState(room);
   });
@@ -817,22 +1065,13 @@ io.on('connection', (socket) => {
           if (tb !== Infinity && tb < tPlayer - 0.05) { blocked = true; break; }
         }
         if (!blocked) {
-          const before = target.hp;
-          target.hp = Math.max(0, target.hp - cfg.damage);
-          const dealt = before - target.hp;
-          shooter.stats.hits += 1;
-          shooter.stats.damageDealt += dealt;
-          target.stats.damageTaken += dealt;
           const point = {
             x: origin.x + dir.x * tPlayer,
             y: origin.y + dir.y * tPlayer,
             z: origin.z + dir.z * tPlayer,
           };
           hitInfo = { tPlayer, point };
-          emitRoom(room, 'hit', {
-            attacker: shooter.slot, victim: target.slot, hp: target.hp, point, dmg: dealt, weapon: cfg.id,
-          });
-          if (target.hp <= 0) applyKill(room, shooter, target);
+          applyDamage(room, shooter, target, cfg.damage, point, cfg.id);
         }
       }
     }

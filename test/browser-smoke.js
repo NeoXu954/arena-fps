@@ -43,6 +43,9 @@ async function newPage(browser, tag) {
     // 首页可见
     const homeVisible = await a.evaluate(() => document.getElementById('screen-home').classList.contains('active'));
     assert(homeVisible, '首页正确显示');
+    await a.click('.mode-btn[data-mode="supply"]');
+    const supplySelected = await a.evaluate(() => document.querySelector('.mode-btn[data-mode="supply"]').classList.contains('active'));
+    assert(supplySelected, '可选择战术补给模式');
 
     // 创建房间
     await a.click('#btn-create');
@@ -69,6 +72,8 @@ async function newPage(browser, tag) {
     // HUD 元素存在且计时在跑
     const timer = await a.evaluate(() => document.getElementById('hud-timer').textContent);
     assert(/^\d:\d{2}$/.test(timer), 'A HUD 计时显示正常: ' + timer);
+    const modeChip = await a.evaluate(() => document.getElementById('mode-chip').textContent);
+    assert(modeChip.includes('战术补给'), 'A HUD 显示战术补给模式');
 
     // 模拟射击：调用内部？改为派发触摸到射击按钮，验证不报错
     await a.evaluate(() => {

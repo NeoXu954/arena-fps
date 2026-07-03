@@ -38,6 +38,14 @@
 
         <input id="name-input" class="text-input" maxlength="12" placeholder="输入你的代号（可选）" />
 
+        <div class="mode-box">
+          <span class="solo-label">对战模式</span>
+          <div class="mode-row">
+            <button class="btn mode-btn active" data-mode="classic" type="button">传统对战</button>
+            <button class="btn mode-btn" data-mode="supply" type="button">战术补给</button>
+          </div>
+        </div>
+
         <div class="solo-box">
           <span class="solo-label">单人训练 · 难度</span>
           <div class="diff-row">
@@ -102,6 +110,12 @@
       </div>
     </div>
 
+    <div class="combat-status">
+      <span id="mode-chip" class="mode-chip">传统对战</span>
+      <span id="armor-chip" class="effect-chip hidden">护甲 0</span>
+      <span id="speed-chip" class="effect-chip hidden">加速 0s</span>
+    </div>
+
     <!-- 准星 -->
     <div id="crosshair" class="crosshair">
       <span></span><span></span><span></span><span></span>
@@ -157,6 +171,7 @@
         <div class="stat-card"><span>击败</span><b id="stat-kills">0</b></div>
         <div class="stat-card"><span>伤害</span><b id="stat-damage">0</b></div>
         <div class="stat-card"><span>换弹</span><b id="stat-reloads">0</b></div>
+        <div class="stat-card"><span>补给</span><b id="stat-pickups">0</b></div>
       </div>
       <div class="result-compare">
         <div><span>我方</span><b id="stat-me-line">0 击败 / 0 伤害</b></div>
@@ -179,6 +194,7 @@
         <li><b>换弹</b>按钮：装填当前武器</li>
         <li><b>跳</b>按钮：跳跃越过掩体</li>
         <li><b>键盘</b>：WASD 移动，1/2 切枪，R 换弹，空格跳跃</li>
+        <li><b>战术补给</b>：场内刷新血包、护甲、弹药箱和疾跑芯片</li>
         <li>击败对手 +1 分，被击败后 3 秒复活</li>
         <li>单局 3 分钟，比分高者获胜；平局进入 30 秒加时</li>
       </ul>

@@ -19,6 +19,9 @@ const input = new Input();
 const audio = new AudioFX();
 const effects = new Effects(world.scene);
 let lastPlayers = [];
+let currentMode = 'classic';
+let selectedMode = 'classic';
+const MODE_LABELS = { classic: '传统对战', supply: '战术补给' };
 
 const defaultSettings = {
   sensitivity: 100,
@@ -64,6 +67,7 @@ function syncSettingsUI() {
 const ui = {
   updateSnapshot(s) {
     lastPlayers = s.players || lastPlayers;
+    if (s.mode) this.setMode(s.mode, s.modeLabel);
   },
   setHP(side, hp) {
     const el = side === 'me' ? $('hud-hp-me') : $('hud-hp-op');
@@ -99,6 +103,20 @@ const ui = {
       if (el) el.textContent = ammoByWeapon && typeof ammoByWeapon[w.id] === 'number' ? ammoByWeapon[w.id] : w.mag;
     });
     $('btn-weapon').classList.toggle('switching', !!reloading);
+  },
+  setMode(mode, label) {
+    currentMode = mode || currentMode || 'classic';
+    const text = label || MODE_LABELS[currentMode] || MODE_LABELS.classic;
+    $('mode-chip').textContent = text;
+    $('mode-chip').classList.toggle('supply', currentMode === 'supply');
+  },
+  setEffects(player) {
+    const armor = player && typeof player.armor === 'number' ? player.armor : 0;
+    const speed = player && player.effects ? Math.ceil((player.effects.speed || 0) / 1000) : 0;
+    $('armor-chip').textContent = `护甲 ${armor}`;
+    $('armor-chip').classList.toggle('hidden', armor <= 0);
+    $('speed-chip').textContent = `加速 ${speed}s`;
+    $('speed-chip').classList.toggle('hidden', speed <= 0);
   },
   showKill(text, dead) {
     const feed = $('killfeed');
@@ -154,6 +172,8 @@ function enterMatch() {
   game.enter(net.slot);
   game.start();
   show('screen-hud');
+  ui.setMode(net.mode || selectedMode);
+  ui.setEffects({ armor: 0, effects: { speed: 0 } });
   ui.setWeapon(WEAPONS.defaultId, Object.fromEntries(WEAPONS.list.map((w) => [w.id, w.mag])), false);
   ui.setAmmo(DEFAULT_WEAPON.mag, DEFAULT_WEAPON.mag, false);
 }
@@ -168,15 +188,23 @@ function requestFullscreen() {
 }
 
 // ---------------- 首页交互 ----------------
+document.querySelectorAll('.mode-btn').forEach((b) => {
+  b.addEventListener('click', () => {
+    document.querySelectorAll('.mode-btn').forEach((x) => x.classList.remove('active'));
+    b.classList.add('active');
+    selectedMode = b.dataset.mode || 'classic';
+  });
+});
+
 $('btn-create').addEventListener('click', async () => {
   audio.unlock();
   myName = $('name-input').value.trim();
   showLoading(true);
-  const res = await net.createRoom(myName);
+  const res = await net.createRoom(myName, selectedMode);
   showLoading(false);
   if (res && res.ok) {
     $('room-code').textContent = res.roomId;
-    $('lobby-status').textContent = '把房间号发给好友，对手加入后自动开始';
+    $('lobby-status').textContent = `${res.modeLabel || MODE_LABELS[selectedMode]} · 把房间号发给好友，对手加入后自动开始`;
     show('screen-lobby');
   } else {
     ui.toast('创建房间失败');
@@ -268,7 +296,7 @@ $('btn-solo').addEventListener('click', async () => {
   audio.unlock();
   myName = $('name-input').value.trim();
   showLoading(true);
-  const res = await net.startSolo(myName, soloDifficulty);
+  const res = await net.startSolo(myName, soloDifficulty, selectedMode);
   showLoading(false);
   if (!res || !res.ok) {
     ui.toast('开始失败，请重试');
@@ -311,6 +339,8 @@ function resetToHome() {
   matchStarted = false;
   game.stop();
   if (game.opp) { world.removeRemotePlayer(game.opp.slot); game.opp = null; }
+  world.updatePickups([]);
+  ui.setEffects({ armor: 0, effects: { speed: 0 } });
   show('screen-home');
 }
 
@@ -319,6 +349,14 @@ function showLoading(on) { $('loading').classList.toggle('show', on); }
 // ---------------- 网络事件 ----------------
 net.on('roomState', (st) => {
   if (st.players) lastPlayers = st.players;
+  if (st.mode) {
+    net.mode = st.mode;
+    ui.setMode(st.mode, st.modeLabel);
+    if (st.phase === 'waiting') {
+      $('lobby-status').textContent = `${st.modeLabel || MODE_LABELS[st.mode]} · 把房间号发给好友，对手加入后自动开始`;
+    }
+  }
+  if (st.pickups) world.updatePickups(st.pickups);
   // 房间阶段驱动界面
   if (st.phase === 'waiting') {
     if (!matchStarted) show('screen-lobby');
@@ -391,6 +429,7 @@ function showResult(result, players) {
 function safeStats(player) {
   return (player && player.stats) || {
     shots: 0, hits: 0, kills: 0, deaths: 0, damageDealt: 0, damageTaken: 0, reloads: 0,
+    pickups: 0, healing: 0, armorGained: 0, armorBlocked: 0,
   };
 }
 
@@ -404,6 +443,7 @@ function updateResultStats(players, slot) {
   $('stat-kills').textContent = ms.kills || 0;
   $('stat-damage').textContent = ms.damageDealt || 0;
   $('stat-reloads').textContent = ms.reloads || 0;
+  $('stat-pickups').textContent = ms.pickups || 0;
   $('stat-me-line').textContent = `${ms.kills || 0} 击败 / ${ms.damageDealt || 0} 伤害 / ${ms.deaths || 0} 阵亡`;
   $('stat-op-line').textContent = `${os.kills || 0} 击败 / ${os.damageDealt || 0} 伤害 / ${os.deaths || 0} 阵亡`;
 }

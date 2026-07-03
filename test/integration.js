@@ -8,7 +8,7 @@ function client(name) {
   s.name = name; s.events = [];
   ['roomState', 'snapshot', 'matchStart', 'overtime', 'gameOver', 'oppState',
    'oppShot', 'hit', 'kill', 'respawn', 'reloadStart', 'reloaded', 'shotResult',
-   'emptyMag', 'weaponChanged', 'oppWeapon', 'opponentLeft'].forEach((e) => s.on(e, (d) => s.events.push({ e, d })));
+   'emptyMag', 'weaponChanged', 'oppWeapon', 'pickup', 'pickupSpawned', 'opponentLeft'].forEach((e) => s.on(e, (d) => s.events.push({ e, d })));
   return s;
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -105,6 +105,23 @@ function assert(c, m) { if (!c) { console.error('❌ FAIL:', m); process.exitCod
 
   a.close();
   await sleep(200);
+
+  // 战术补给模式：验证补给点、护甲和补给统计
+  const supply = client('Supply');
+  await sleep(300);
+  const rs = await new Promise((r) => supply.emit('startSolo', { name: 'Supply', difficulty: 'easy', mode: 'supply' }, r));
+  assert(rs.ok && rs.mode === 'supply', '战术补给单人局创建成功');
+  supply.slot = rs.slot;
+  await sleep(3600);
+  supply.events.length = 0;
+  supply.emit('move', { pos: { x: 0, y: 1.5, z: 10 }, yaw: 0, pitch: 0, moving: false });
+  await sleep(700);
+  const pickup = supply.events.find((x) => x.e === 'pickup' && x.d.slot === supply.slot && x.d.type === 'armor');
+  assert(pickup && pickup.d.armor > 0, '战术补给模式可拾取护甲补给');
+  assert(pickup && pickup.d.stats && pickup.d.stats.pickups >= 1, '补给拾取次数被统计');
+  supply.close();
+  await sleep(200);
+
   console.log('\n集成测试完成。');
   process.exit(process.exitCode || 0);
 })();
